@@ -11,7 +11,7 @@
 #   3. opisy zgód w Info.plist      → mowa, mikrofon
 #   4. insert_dylib                 → LC_LOAD_DYLIB, tylko gdy go jeszcze nie ma
 #   5. ustawienia CloudContent      → bez nich przepodpisana kopia pada przy starcie
-#   6. podpis certyfikatem lokalny certyfikat (bez cichego zapasu adhoc)
+#   6. podpis lokalnym certyfikatem (bez cichego zapasu adhoc)
 #   7. weryfikacja
 #
 # Oryginał w /Applications nie jest ruszany — także jego preferencje: żyją
@@ -24,7 +24,12 @@ APP="$HOME/Applications/SpliceKit/Final Cut Pro.app"
 BIN="$APP/Contents/MacOS/Final Cut Pro"
 FW_DIR="$APP/Contents/Frameworks/SpliceKit.framework"
 ENTITLEMENTS="$REPO/entitlements.plist"
-IDENTITY="${SPLICEKIT_SIGN_IDENTITY:?ustaw SPLICEKIT_SIGN_IDENTITY}"
+# Certyfikat do podpisu (SHA-1 z `security find-identity -p codesigning`):
+# zmienna SPLICEKIT_SIGN_IDENTITY albo plik build/sign-identity (poza gitem).
+IDENTITY="${SPLICEKIT_SIGN_IDENTITY:-}"
+if [[ -z "$IDENTITY" && -f "$REPO/build/sign-identity" ]]; then
+    IDENTITY="$(tr -d '[:space:]' < "$REPO/build/sign-identity")"
+fi
 LOAD_CMD="@rpath/SpliceKit.framework/Versions/A/SpliceKit"
 INSERT_DYLIB="$REPO/build/insert_dylib"
 INSERT_DYLIB_SRC="$REPO/build/insert_dylib-src"
@@ -39,9 +44,11 @@ krok "0. Warunki"
 if pgrep -f "$BIN" >/dev/null; then
     stop "Kopia Final Cuta chodzi — zamknij ją i odpal jeszcze raz."
 fi
-# find-identity BEZ -v: certyfikat jest samopodpisany, -v go ukrywa.
-security find-identity -p codesigning | grep -q "$IDENTITY" \
-    || stop "Nie widzę certyfikatu lokalny certyfikat ($IDENTITY) w pęku kluczy."
+[[ -n "$IDENTITY" ]] || stop "Brak certyfikatu: ustaw SPLICEKIT_SIGN_IDENTITY albo zapisz SHA-1 w build/sign-identity."
+# find-identity BEZ -v: certyfikat samopodpisany -v ukrywa.
+CERT_NAME="$(security find-identity -p codesigning | awk -v id="$IDENTITY" '$2 == id { sub(/^[^"]*"/, ""); sub(/".*$/, ""); print; exit }')"
+[[ -n "$CERT_NAME" ]] || stop "Nie widzę certyfikatu $IDENTITY w pęku kluczy."
+echo "[+] certyfikat: $CERT_NAME"
 echo "[+] kopia FCP: $APP"
 echo "[+] SpliceKit $VERSION, repo: $REPO"
 
@@ -112,7 +119,7 @@ defaults write "$PREFS" FFCloudContentDisabled -bool true
 echo "[+] $PREFS: CloudContentFirstLaunchCompleted = true, FFCloudContentDisabled = true"
 
 # --- 6. podpis --------------------------------------------------------------
-krok "6. Podpis (lokalny certyfikat)"
+krok "6. Podpis ($CERT_NAME)"
 # Śmieciowe atrybuty po insert_dylib/PlistBuddy psują pieczęć podpisu.
 xattr -cr "$APP" 2>/dev/null || true
 # Od środka na zewnątrz: framework, potem aplikacja. Frameworki Apple zostają
@@ -125,9 +132,9 @@ krok "7. Weryfikacja"
 blad=0
 if otool -L "$BIN" | grep -q "$LOAD_CMD"; then echo "[+] wstrzyknięcie: jest"; else echo "[X] wstrzyknięcie: BRAK"; blad=1; fi
 podpis="$(codesign -dvv "$APP" 2>&1 | awk -F= '/^Authority=/ && !n++ { print $2 }')"
-if [[ "$podpis" == "lokalny certyfikat" ]]; then echo "[+] podpis aplikacji: $podpis"; else echo "[X] podpis aplikacji: ${podpis:-brak}"; blad=1; fi
+if [[ "$podpis" == "$CERT_NAME" ]]; then echo "[+] podpis aplikacji: $podpis"; else echo "[X] podpis aplikacji: ${podpis:-brak}"; blad=1; fi
 podpis_fw="$(codesign -dvv "$FW_DIR" 2>&1 | awk -F= '/^Authority=/ && !n++ { print $2 }')"
-if [[ "$podpis_fw" == "lokalny certyfikat" ]]; then echo "[+] podpis frameworka: $podpis_fw"; else echo "[X] podpis frameworka: ${podpis_fw:-brak}"; blad=1; fi
+if [[ "$podpis_fw" == "$CERT_NAME" ]]; then echo "[+] podpis frameworka: $podpis_fw"; else echo "[X] podpis frameworka: ${podpis_fw:-brak}"; blad=1; fi
 if codesign -d --entitlements - "$APP" 2>&1 | grep -q disable-library-validation; then echo "[+] uprawnienia: disable-library-validation"; else echo "[X] uprawnienia: brak disable-library-validation"; blad=1; fi
 echo "[i] codesign --verify: $(codesign --verify "$APP" 2>&1 || true)"
 

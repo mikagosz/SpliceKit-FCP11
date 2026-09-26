@@ -1,3 +1,107 @@
+# SpliceKit for Final Cut Pro 11 — mikagosz edition
+
+A modified version of **[SpliceKit](https://github.com/elliotttate/SpliceKit) by Elliott Tate**
+(MIT), adapted to run on **Final Cut Pro 11.2** and trimmed down for one job:
+letting Claude edit an open Final Cut Pro project over MCP.
+
+All credit for SpliceKit itself — the injected runtime, the JSON-RPC bridge, the MCP
+server and everything else below the second heading — goes to the original author and
+contributors. Their full git history is kept in this repository. This edition only adds
+the changes listed here.
+
+> **Why a separate edition?** Upstream targets newer Final Cut Pro releases (12.x).
+> SpliceKit talks to private Final Cut Pro internals, and Apple renames and reshapes
+> them between versions. On Final Cut Pro 11.2 several upstream commands silently did
+> nothing. This edition fixes the ones found so far and stays on 11.2.
+
+## Status
+
+| | |
+|---|---|
+| Tested on | Final Cut Pro **11.2** (build 442095), macOS 27.2, Apple Silicon |
+| Based on | upstream SpliceKit **3.3.9** (`223694a`) |
+| Not tested | Final Cut Pro 12.x — use [upstream](https://github.com/elliotttate/SpliceKit) there |
+
+Any command not listed below as fixed should be treated as **unverified on 11.2**.
+
+## What is different from upstream
+
+1. **No telemetry.** Upstream reports crashes and logs to the author's Sentry project,
+   on by default and with `sendDefaultPii` enabled. Here `SpliceKitSentry.m` is a
+   no-op stub with the same symbols, and the Sentry SDK is neither downloaded nor linked.
+   Crashes are logged locally only.
+2. **One build script** — `mikagosz-build.sh` builds the dylib, injects it into the
+   Final Cut Pro copy, signs it with *your* local code-signing certificate (no silent
+   ad-hoc fallback) and verifies the result. It replaces `patcher/patch_fcp.sh`, which
+   is out of date upstream, and `make deploy`, which does not inject.
+3. **Smaller MCP surface** — 61 of 221 tools, listed in `mcp/mikagosz-tools.txt`
+   (editing, transcripts, captions, export, dialogs). Tools that can run arbitrary code
+   inside Final Cut Pro (`raw_call`, `call_method*`, `debug_*`, `execute_menu_command`)
+   are left out. Set `SPLICEKIT_ALL_TOOLS=1` to get the full upstream set.
+4. **Fixes for Final Cut Pro 11.2**
+   - `retimeReverse` → FCP 11.2 selector `retimeReverseClip:` (reverse clip works).
+   - Effect parameters: `get_inspector_properties("channels")` now finds effects added
+     from the timeline (they live on the clip's container, `videoEffects`) and walks
+     parameter folders via `children`. `set_inspector_property("handle:…")` now opens
+     the edit action on the stack that owns the parameter, so Final Cut Pro redraws,
+     saves and can undo the change. Result: Color Adjustments and similar effects can
+     be read and set over MCP.
+5. **Build fixes** — paths with spaces (`Makefile`), missing BRAW stubs when the
+   Blackmagic RAW SDK is not installed, `parakeet-transcriber` pinned to FluidAudio
+   0.13.6 (0.13.7 changed the `transcribe` API).
+
+### Known on 11.2, not fixed yet
+
+- `showMagneticMaskEditor` — "No responder handled"; FCP 11.2 has
+  `toggleSegmentationMaskEditor:`. Adding a Magnetic Mask over MCP works, but it does
+  not enter subject-selection mode.
+- `retimeSlow10` (`retimeSlowTenth:`) — untested.
+- `browser_append_clip` resolves clips only by `handle`, not by name or index.
+
+### Left in the tree, unused
+
+The GUI patcher (`patcher/`), `release.sh` and the Sentry docs and scripts are upstream
+files this edition does not use. They still reference Sentry.
+
+## Build and install
+
+Requirements: Final Cut Pro 11.2, Xcode command line tools, a local code-signing
+certificate (a self-signed one is enough), Python 3 for the MCP server.
+
+```bash
+# 1. a writable copy of Final Cut Pro — the original is never touched
+mkdir -p ~/Applications/SpliceKit
+ditto "/Applications/Final Cut Pro.app" ~/Applications/SpliceKit/"Final Cut Pro.app"
+
+# 2. tell the script which certificate to sign with (SHA-1 from `security find-identity -p codesigning`)
+export SPLICEKIT_SIGN_IDENTITY=<certificate SHA-1>
+
+# 3. build, inject, sign, verify
+./mikagosz-build.sh
+
+# 4. MCP server
+python3 -m venv ~/.local/venvs/splicekit
+~/.local/venvs/splicekit/bin/pip install -r mcp/requirements.txt
+claude mcp add --scope user splicekit -- ~/.local/venvs/splicekit/bin/python "$PWD/mcp/server.py"
+```
+
+Open the copy (`open ~/Applications/SpliceKit/"Final Cut Pro.app"`), not the original —
+they share a name and icon. Check the bridge:
+`echo '{"jsonrpc":"2.0","method":"system.version","id":1}' | nc -w 3 127.0.0.1 9876`.
+
+After a Final Cut Pro update, redo step 1 and run the script again.
+
+## License
+
+MIT, same as upstream — see [LICENSE](LICENSE). The original copyright notice is kept.
+
+---
+
+*Everything below is the original upstream README, unchanged. Install instructions and
+links there point to upstream releases and do not apply to this edition.*
+
+---
+
 # SpliceKit
 
 [![Release](https://img.shields.io/github/v/release/elliotttate/SpliceKit)](https://github.com/elliotttate/SpliceKit/releases/latest)
