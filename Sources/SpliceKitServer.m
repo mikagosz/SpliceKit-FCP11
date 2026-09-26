@@ -27739,6 +27739,9 @@ NSDictionary *SpliceKit_handleRequest(NSDictionary *request) {
     } else if ([method isEqualToString:@"diag.menuActions"]) {
         extern NSDictionary *SpliceKit_handleDiagMenuActions(NSDictionary *);  // mikagosz
         result = SpliceKit_handleDiagMenuActions(params);
+    } else if ([method isEqualToString:@"mask.addControlPoint"]) {
+        extern NSDictionary *SpliceKit_handleMaskAddControlPoint(NSDictionary *);  // mikagosz
+        result = SpliceKit_handleMaskAddControlPoint(params);
     } else if ([method isEqualToString:@"system.callMethod"]) {
         result = SpliceKit_handleSystemCallMethod(params);
     } else if ([method isEqualToString:@"system.swizzle"]) {

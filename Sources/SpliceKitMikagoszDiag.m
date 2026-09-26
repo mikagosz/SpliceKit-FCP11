@@ -99,3 +99,105 @@ NSDictionary *SpliceKit_handleDiagMenuActions(NSDictionary *params) {
     if ([NSThread isMainThread]) collect(); else dispatch_sync(dispatch_get_main_queue(), collect);
     return @{@"count": @(items.count), @"items": items};
 }
+
+#pragma mark - Maska magnetyczna: punkt na osobie bez klikania
+
+#import <objc/message.h>
+
+typedef struct { int64_t value; int32_t timescale; uint32_t flags; int64_t epoch; } MKG_CMTime;
+typedef struct { MKG_CMTime start; MKG_CMTime duration; } MKG_CMTimeRange;
+
+extern id SpliceKit_getActiveTimelineModule(void);
+extern void SpliceKit_executeOnMainThread(dispatch_block_t block);
+
+static id MKG_selectedTimelineItem(id timeline) {
+    SEL selSel = NSSelectorFromString(@"selectedItems:includeItemBeforePlayheadIfLast:");
+    id r = nil;
+    if ([timeline respondsToSelector:selSel])
+        r = ((id (*)(id, SEL, BOOL, BOOL))objc_msgSend)(timeline, selSel, NO, YES);
+    if ((![r isKindOfClass:[NSArray class]] || [(NSArray *)r count] == 0) &&
+        [timeline respondsToSelector:@selector(selectedItems)])
+        r = ((id (*)(id, SEL))objc_msgSend)(timeline, @selector(selectedItems));
+    return ([r isKindOfClass:[NSArray class]] && [(NSArray *)r count]) ? [(NSArray *)r firstObject] : nil;
+}
+
+static MKG_CMTimeRange MKG_clippedRange(id obj) {
+    MKG_CMTimeRange r = {{0, 600, 1, 0}, {0, 600, 1, 0}};
+    SEL s = NSSelectorFromString(@"clippedRange");
+    if (![obj respondsToSelector:s]) return r;
+#if defined(__x86_64__)
+    ((void (*)(MKG_CMTimeRange *, id, SEL))objc_msgSend_stret)(&r, obj, s);
+#else
+    r = ((MKG_CMTimeRange (*)(id, SEL))objc_msgSend)(obj, s);
+#endif
+    return r;
+}
+
+// mask.addControlPoint — params: x, y (punkt w kadrze), offset (s od początku klipu, domyślnie 0),
+// include (YES = dołącz, NO = wyklucz; domyślnie YES), analyze (domyślnie NO).
+// Działa na zaznaczonym klipie z efektem Magnetic Mask (FFSegmentationMaskEffect).
+NSDictionary *SpliceKit_handleMaskAddControlPoint(NSDictionary *params) {
+    if (!params[@"x"] || !params[@"y"]) return @{@"error": @"x and y required"};
+    double x = [params[@"x"] doubleValue], y = [params[@"y"] doubleValue];
+    double offset = params[@"offset"] ? [params[@"offset"] doubleValue] : 0;
+    BOOL include = params[@"include"] ? [params[@"include"] boolValue] : YES;
+    BOOL analyze = [params[@"analyze"] boolValue];
+
+    __block NSDictionary *result = nil;
+    SpliceKit_executeOnMainThread(^{
+        @try {
+            id timeline = SpliceKit_getActiveTimelineModule();
+            id item = timeline ? MKG_selectedTimelineItem(timeline) : nil;
+            if (!item) { result = @{@"error": @"No clip selected"}; return; }
+            id stack = [item respondsToSelector:NSSelectorFromString(@"videoEffects")]
+                ? ((id (*)(id, SEL))objc_msgSend)(item, NSSelectorFromString(@"videoEffects")) : nil;
+            id maskEffect = nil;
+            for (id e in (NSArray *)[stack valueForKey:@"effects"])
+                if ([e isKindOfClass:NSClassFromString(@"FFSegmentationMaskEffect")]) maskEffect = e;
+            if (!maskEffect) { result = @{@"error": @"Selected clip has no Magnetic Mask"}; return; }
+            id mask = [(NSArray *)[maskEffect valueForKey:@"masks"] firstObject];
+            if (!mask) { result = @{@"error": @"Magnetic Mask has no mask object"}; return; }
+
+            MKG_CMTimeRange range = MKG_clippedRange(item);
+            int32_t ts = range.start.timescale > 0 ? range.start.timescale : 600;
+            MKG_CMTime t = range.start;
+            t.value += (int64_t)llround(offset * ts);
+
+            id cp = ((id (*)(id, SEL, CGPoint, BOOL))objc_msgSend)(
+                [NSClassFromString(@"FFSegmentationControlPoint") alloc],
+                NSSelectorFromString(@"initWithPoint:influence:"), CGPointMake(x, y), include);
+
+            NSString *desc = @"Add Magnetic Mask Point";
+            SEL beginSel = NSSelectorFromString(@"actionBegin:animationHint:deferUpdates:");
+            SEL endSel = NSSelectorFromString(@"actionEnd:save:error:");
+            if ([stack respondsToSelector:beginSel])
+                ((void (*)(id, SEL, id, id, BOOL))objc_msgSend)(stack, beginSel, desc, nil, YES);
+            ((void (*)(id, SEL, id, MKG_CMTime))objc_msgSend)(
+                mask, NSSelectorFromString(@"operationAddControlPoint:atTime:"), cp, t);
+            if ([stack respondsToSelector:endSel])
+                ((void (*)(id, SEL, id, BOOL, id))objc_msgSend)(stack, endSel, desc, YES, nil);
+
+            int64_t frameState = 0;
+            id points = ((id (*)(id, SEL, MKG_CMTime, int64_t *))objc_msgSend)(
+                mask, NSSelectorFromString(@"controlPointsAtTime:frameState:"), t, &frameState);
+            NSMutableArray *readBack = [NSMutableArray array];
+            for (id p in ([points isKindOfClass:[NSArray class]] ? points : @[]))
+                [readBack addObject:@{@"x": [p valueForKey:@"x"], @"y": [p valueForKey:@"y"],
+                                      @"include": [p valueForKey:@"influence"]}];
+
+            NSMutableDictionary *r = [@{@"status": @"ok",
+                                        @"localTime": @{@"value": @(t.value), @"timescale": @(t.timescale)},
+                                        @"clipStart": @{@"value": @(range.start.value), @"timescale": @(range.start.timescale)},
+                                        @"pointsAtTime": readBack,
+                                        @"frameState": @(frameState)} mutableCopy];
+            if (analyze) {
+                BOOL sent = [[NSApplication sharedApplication] sendAction:NSSelectorFromString(@"analyzeAction:") to:nil from:nil];
+                r[@"analyzeSent"] = @(sent);
+            }
+            result = r;
+        } @catch (NSException *e) {
+            result = @{@"error": [NSString stringWithFormat:@"Exception: %@", e.reason]};
+        }
+    });
+    return result ?: @{@"error": @"mask.addControlPoint failed"};
+}
