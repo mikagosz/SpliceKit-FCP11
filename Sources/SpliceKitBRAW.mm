@@ -5599,6 +5599,15 @@ SPLICEKIT_BRAW_EXTERN_C NSDictionary *SpliceKit_handleBRAWDescribeImmersive(NSDi
     return SpliceKit_handleBRAWProbe(params);
 }
 
+// mikagosz: upstream nie ma tych dwóch atrap i bez SDK BRAW linkowanie pada.
+SPLICEKIT_BRAW_EXTERN_C void SpliceKit_bootstrapBRAWAtLaunchPhase(NSString *phase) {
+    (void)phase;
+}
+
+SPLICEKIT_BRAW_EXTERN_C NSDictionary *SpliceKit_handleBRAWAVProbe(NSDictionary *params) {
+    return SpliceKit_handleBRAWProbe(params);
+}
+
 SPLICEKIT_BRAW_EXTERN_C NSDictionary *SpliceKit_handleBRAWReadMotionSamples(NSDictionary *params) {
     return SpliceKit_handleBRAWProbe(params);
 }

@@ -3,7 +3,7 @@ ARCHS = -arch arm64 -arch x86_64
 MIN_VERSION = -mmacosx-version-min=14.0
 FRAMEWORKS = -framework Foundation -framework AppKit -framework AVFoundation -framework Speech -framework CoreServices -framework CoreImage -framework Metal -framework MetalKit -framework QuartzCore -framework Vision
 MODULE_CACHE_DIR = $(BUILD_DIR)/ModuleCache
-OBJC_FLAGS = -fobjc-arc -fmodules -fmodules-cache-path=$(abspath $(MODULE_CACHE_DIR))
+OBJC_FLAGS = -fobjc-arc -fmodules -fmodules-cache-path=$(MODULE_CACHE_DIR)
 OBJCXX_FLAGS = $(OBJC_FLAGS) -std=c++17
 DEBUG_FLAGS = -g
 LINKER_FLAGS = -undefined dynamic_lookup -dynamiclib
@@ -11,9 +11,6 @@ CPP_LIBS = -lc++
 INSTALL_NAME = -install_name @rpath/SpliceKit.framework/Versions/A/SpliceKit
 SPLICEKIT_VERSION = $(shell awk -F= '/SPLICEKIT_VERSION/ { gsub(/[ ;]/, "", $$2); print $$2; exit }' patcher/SpliceKit/Configuration/Version.xcconfig)
 VERSION_DEFINE = -DSPLICEKIT_VERSION=\"$(SPLICEKIT_VERSION)\"
-SENTRY_FRAMEWORK_DIR = patcher/Frameworks
-SENTRY_FRAMEWORK = $(SENTRY_FRAMEWORK_DIR)/Sentry.framework
-SENTRY_FLAGS = -F $(SENTRY_FRAMEWORK_DIR) -ObjC -framework Sentry
 DSYM = $(OUTPUT).dSYM
 
 # Read canonical source list from Sources/SOURCES.txt
@@ -116,7 +113,7 @@ MKV_IMPORT_SOURCES = $(MKV_SOURCE_DIR)/MKVCommon.mm \
 MKV_FRAMEWORKS = -framework Foundation -framework CoreFoundation -framework CoreMedia -framework CoreVideo -framework MediaToolbox -framework AudioToolbox
 # libwebm uses its own exceptions/assert flow; keep default C++ settings but
 # disable ObjC ARC for the .mm so we can freely mix with C++ heap types.
-MKV_CFLAGS = $(ARCHS) $(MIN_VERSION) -fno-objc-arc -fmodules -fmodules-cache-path=$(abspath $(MODULE_CACHE_DIR)) -std=c++17 $(DEBUG_FLAGS) -fvisibility=hidden -Wno-deprecated-declarations -I $(MKV_SOURCE_DIR) -I $(MKV_PRIVATE_DIR) -I $(MKV_LIBWEBM_DIR)
+MKV_CFLAGS = $(ARCHS) $(MIN_VERSION) -fno-objc-arc -fmodules -fmodules-cache-path=$(MODULE_CACHE_DIR) -std=c++17 $(DEBUG_FLAGS) -fvisibility=hidden -Wno-deprecated-declarations -I $(MKV_SOURCE_DIR) -I $(MKV_PRIVATE_DIR) -I $(MKV_LIBWEBM_DIR)
 MKV_LDFLAGS = -bundle $(CPP_LIBS)
 
 .PHONY: all clean deploy launch tools url-import-tools audio-bus-probe install-audio-bus-probe uninstall-audio-bus-probe symbols braw-prototype braw-raw-processor vp9-prototype mkv-prototype mcp-setup mcp-doctor
@@ -229,9 +226,6 @@ url-import-tools:
 $(BUILD_DIR):
 	@mkdir -p $(BUILD_DIR)
 
-$(SENTRY_FRAMEWORK): Scripts/ensure_sentry_framework.sh
-	@bash Scripts/ensure_sentry_framework.sh
-
 $(BUILD_DIR)/lua: | $(BUILD_DIR)
 	@mkdir -p $(BUILD_DIR)/lua
 
@@ -259,17 +253,17 @@ $(LUA_LIB): $(LUA_OBJS) | $(BUILD_DIR)
 	libtool -static -o $@ $^
 	@echo "Built: $(LUA_LIB)"
 
-$(BUILD_DIR)/obj/%.o: Sources/%.m Sources/SpliceKit.h $(SENTRY_FRAMEWORK) | $(BUILD_DIR)/obj
+$(BUILD_DIR)/obj/%.o: Sources/%.m Sources/SpliceKit.h | $(BUILD_DIR)/obj
 	$(CC) $(ARCHS) $(MIN_VERSION) $(OBJC_FLAGS) $(DEBUG_FLAGS) $(VERSION_DEFINE) \
-		-I Sources -I $(LUA_DIR) -F $(SENTRY_FRAMEWORK_DIR) -c $< -o $@
+		-I Sources -I $(LUA_DIR) -c $< -o $@
 
-$(BUILD_DIR)/obj/%.o: Sources/%.mm Sources/SpliceKit.h $(SENTRY_FRAMEWORK) | $(BUILD_DIR)/obj
+$(BUILD_DIR)/obj/%.o: Sources/%.mm Sources/SpliceKit.h | $(BUILD_DIR)/obj
 	$(CC) $(ARCHS) $(MIN_VERSION) $(OBJCXX_FLAGS) $(DEBUG_FLAGS) $(VERSION_DEFINE) \
-		-I Sources -I $(LUA_DIR) -F $(SENTRY_FRAMEWORK_DIR) -c $< -o $@
+		-I Sources -I $(LUA_DIR) -c $< -o $@
 
-$(OUTPUT): $(OBJS) $(LUA_LIB) $(SENTRY_FRAMEWORK) | $(BUILD_DIR)
+$(OUTPUT): $(OBJS) $(LUA_LIB) | $(BUILD_DIR)
 	$(CC) $(ARCHS) $(MIN_VERSION) $(FRAMEWORKS) $(LINKER_FLAGS) \
-		$(INSTALL_NAME) $(OBJS) $(LUA_LIB) $(SENTRY_FLAGS) $(CPP_LIBS) -o $(OUTPUT)
+		$(INSTALL_NAME) $(OBJS) $(LUA_LIB) $(CPP_LIBS) -o $(OUTPUT)
 	@# -undefined dynamic_lookup lets calls into FCP internals resolve at load time,
 	@# but it also silently permits unresolved SpliceKit_* symbols (missing .m files
 	@# not listed in SOURCES.txt). Those become NULL in the host and crash FCP with
@@ -385,10 +379,6 @@ deploy: $(OUTPUT) $(SILENCE_DETECTOR) $(STRUCTURE_ANALYZER) $(MIXER_APP) braw-pr
 		@rm -rf "$(FW_DIR)"
 		@mkdir -p "$(FW_DIR)/Versions/A/Resources"
 	cp $(OUTPUT) "$(FW_DIR)/Versions/A/SpliceKit"
-	@if [ -f "$(HOME)/Library/Application Support/SpliceKit/SpliceKitSentryConfig.plist" ]; then \
-		cp "$(HOME)/Library/Application Support/SpliceKit/SpliceKitSentryConfig.plist" "$(FW_DIR)/Versions/A/Resources/SpliceKitSentryConfig.plist"; \
-		echo "Copied runtime Sentry config into framework resources"; \
-	fi
 		@# Create framework symlinks. Use -n so repeated deploys replace the
 		@# symlink itself instead of following it into Versions/A.
 		@cd "$(FW_DIR)/Versions" && ln -sfn A Current
