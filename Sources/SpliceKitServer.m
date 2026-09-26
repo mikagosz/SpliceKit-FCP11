@@ -2603,7 +2603,7 @@ NSDictionary *SpliceKit_handleTimelineAction(NSDictionary *params) {
         @"retimeSlow50":     @"retimeSlowHalf:",
         @"retimeSlow25":     @"retimeSlowQuarter:",
         @"retimeSlow10":     @"retimeSlowTenth:",
-        @"retimeReverse":    @"retimeReverse:",
+        @"retimeReverse":    @"retimeReverseClip:",  // mikagosz: FCP 11.2 nie ma retimeReverse:
         @"retimeHold":       @"retimeHold:",
         @"freezeFrame":      @"freezeFrame:",
         @"retimeBladeSpeed": @"retimeBladeSpeed:",

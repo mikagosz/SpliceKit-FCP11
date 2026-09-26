@@ -12,6 +12,7 @@ async_status
 get_active_libraries
 is_library_updating
 open_project
+create_project
 create_event
 browser_list_clips
 browser_append_clip
@@ -79,4 +80,6 @@ import_fcpxml
 detect_dialog
 click_dialog_button
 fill_dialog_field
+select_dialog_popup
+toggle_dialog_checkbox
 dismiss_dialog
