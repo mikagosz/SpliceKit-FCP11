@@ -14904,15 +14904,23 @@ static void SpliceKit_collectChannels(id obj, NSMutableArray *channels, NSString
         [channels addObject:ch];
     }
 
-    // Try to get sub-channels
+    // Try to get sub-channels.
+    // mikagosz: FCP 11.2 — efekt trzyma parametry w channelFolder, a foldery
+    // (FFRiggedChannelFolder/CHChannelFolder) wystawiają dzieci przez `children`,
+    // nie `channels`. Bez tego lista parametrów efektu wychodziła pusta.
     @try {
-        SEL subSel = NSSelectorFromString(@"channels");
-        if ([obj respondsToSelector:subSel]) {
+        for (NSString *selName in @[@"channels", @"children", @"channelFolder"]) {
+            SEL subSel = NSSelectorFromString(selName);
+            if (![obj respondsToSelector:subSel]) continue;
             id subs = ((id (*)(id, SEL))objc_msgSend)(obj, subSel);
             if ([subs isKindOfClass:[NSArray class]]) {
                 for (id sub in (NSArray *)subs) {
                     SpliceKit_collectChannels(sub, channels, nil, depth + 1);
                 }
+                break;
+            } else if (subs && [selName isEqualToString:@"channelFolder"]) {
+                SpliceKit_collectChannels(subs, channels, nil, depth + 1);
+                break;
             }
         }
     } @catch (NSException *e) {}
@@ -15189,11 +15197,31 @@ static NSDictionary *SpliceKit_handleInspectorGet(NSDictionary *params) {
                 NSMutableArray *channels = [NSMutableArray array];
                 // Get all effects and their channels
                 @try {
+                    // mikagosz: klip na timelinie bywa kontenerem (FFAnchoredCollection) —
+                    // wtedy efekty dołożone z timeline'u (Color Adjustments, Balance Color)
+                    // siedzą w jego videoEffects, a effectStack wyżej to stos klipu mediów
+                    // w środku. Zbieramy z obu; każdy parametr dostaje nazwę efektu.
+                    NSMutableArray *stacks = [NSMutableArray arrayWithObject:effectStack];
+                    id container = SpliceKit_getSelectedTimelineItem(timeline);
+                    SEL veSel = NSSelectorFromString(@"videoEffects");
+                    if (container && [container respondsToSelector:veSel]) {
+                        id containerStack = ((id (*)(id, SEL))objc_msgSend)(container, veSel);
+                        if (containerStack && containerStack != effectStack) [stacks addObject:containerStack];
+                    }
                     SEL efSel = NSSelectorFromString(@"visibleEffects");
-                    if ([effectStack respondsToSelector:efSel]) {
-                        NSArray *effects = ((id (*)(id, SEL))objc_msgSend)(effectStack, efSel);
+                    for (id stack in stacks) {
+                        if (![stack respondsToSelector:efSel]) continue;
+                        NSArray *effects = ((id (*)(id, SEL))objc_msgSend)(stack, efSel);
                         for (id effect in effects) {
+                            NSUInteger first = channels.count;
                             SpliceKit_collectChannels(effect, channels, nil, 0);
+                            NSString *effectName = nil;
+                            @try {
+                                if ([effect respondsToSelector:@selector(displayName)])
+                                    effectName = [((id (*)(id, SEL))objc_msgSend)(effect, @selector(displayName)) description];
+                            } @catch (NSException *e) {}
+                            for (NSUInteger i = first; i < channels.count && effectName; i++)
+                                channels[i][@"effect"] = effectName;
                         }
                     }
                     // Also get intrinsic channels
