@@ -15329,8 +15329,47 @@ static NSDictionary *SpliceKit_handleInspectorSet(NSDictionary *params) {
             else if ([property hasPrefix:@"handle:"]) {
                 NSString *handle = [property substringFromIndex:7];
                 id channel = SpliceKit_resolveHandle(handle);
-                if (channel) success = SpliceKit_setChannelValue(channel, val);
-                else result = @{@"error": @"Handle not found"};
+                if (!channel) {
+                    result = @{@"error": @"Handle not found"};
+                } else {
+                    // mikagosz: parametr efektu dołożonego z timeline'u należy do stosu
+                    // kontenera (videoEffects), nie do effectStack wyżej. Akcja otwarta
+                    // na złym stosie zapisuje wartość, ale FCP nie przerysowuje obrazu.
+                    // Szukamy stosu-właściciela po łańcuchu parent → channelFolder efektu.
+                    id ownerStack = nil;
+                    @try {
+                        id container = SpliceKit_getSelectedTimelineItem(timeline);
+                        SEL veSel = NSSelectorFromString(@"videoEffects");
+                        id containerStack = (container && [container respondsToSelector:veSel])
+                            ? ((id (*)(id, SEL))objc_msgSend)(container, veSel) : nil;
+                        if (containerStack && containerStack != effectStack) {
+                            NSArray *effects = [containerStack valueForKey:@"effects"];
+                            SEL parentSel = NSSelectorFromString(@"parent");
+                            SEL folderSel = NSSelectorFromString(@"channelFolder");
+                            id p = channel;
+                            for (int depth = 0; p && depth < 12 && !ownerStack; depth++) {
+                                for (id effect in effects) {
+                                    if ([effect respondsToSelector:folderSel] &&
+                                        ((id (*)(id, SEL))objc_msgSend)(effect, folderSel) == p) {
+                                        ownerStack = containerStack;
+                                        break;
+                                    }
+                                }
+                                p = [p respondsToSelector:parentSel]
+                                    ? ((id (*)(id, SEL))objc_msgSend)(p, parentSel) : nil;
+                            }
+                        }
+                    } @catch (NSException *e) {}
+
+                    SEL beginSel = NSSelectorFromString(@"actionBegin:animationHint:deferUpdates:");
+                    SEL endSel = NSSelectorFromString(@"actionEnd:save:error:");
+                    if (ownerStack && [ownerStack respondsToSelector:beginSel])
+                        ((void (*)(id, SEL, id, id, BOOL))objc_msgSend)(ownerStack, beginSel, desc, nil, YES);
+                    // Jak suwak w FCP: operationBegin → odczyt → zapis → operationEnd.
+                    success = SpliceKit_mixerSetStaticChannelValue(channel, val);
+                    if (ownerStack && [ownerStack respondsToSelector:endSel])
+                        ((void (*)(id, SEL, id, BOOL, id))objc_msgSend)(ownerStack, endSel, desc, YES, nil);
+                }
             }
 
             // End undo action
