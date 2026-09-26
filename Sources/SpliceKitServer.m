@@ -2575,8 +2575,8 @@ NSDictionary *SpliceKit_handleTimelineAction(NSDictionary *params) {
         @"extendEditToPlayhead": @"actionExtendEditToPlayhead",
 
         // Insert
-        @"insertPlaceholder": @"insertPlaceholderStoryline:",
-        @"insertGap":        @"insertGapAtPlayhead:",
+        @"insertPlaceholder": @"insertPlaceholder:",
+        @"insertGap":        @"insertGap:",
 
         // Color Correction (add to selected clips)
         @"addColorBoard":          @"addColorBoardEffect:",
@@ -2602,7 +2602,7 @@ NSDictionary *SpliceKit_handleTimelineAction(NSDictionary *params) {
         @"retimeFast20x":    @"retimeFastx20:",
         @"retimeSlow50":     @"retimeSlowHalf:",
         @"retimeSlow25":     @"retimeSlowQuarter:",
-        @"retimeSlow10":     @"retimeSlowTenth:",
+        @"retimeSlow10":     @"retimeSlowTenPercent:",
         @"retimeReverse":    @"retimeReverseClip:",  // mikagosz: FCP 11.2 nie ma retimeReverse:
         @"retimeHold":       @"retimeHold:",
         @"freezeFrame":      @"freezeFrame:",
@@ -2629,8 +2629,8 @@ NSDictionary *SpliceKit_handleTimelineAction(NSDictionary *params) {
         @"previousKeyframe": @"previousKeyframe:",
 
         // Solo/Disable
-        @"solo":             @"soloSelectedClips:",
-        @"disable":          @"disableSelectedClips:",
+        @"solo":             @"solo:",
+        @"disable":          @"enableOrDisableEdit:",
 
         // Compound clips
         @"createCompoundClip": @"createCompoundClip:",
@@ -2644,7 +2644,7 @@ NSDictionary *SpliceKit_handleTimelineAction(NSDictionary *params) {
         @"removeEffects":    @"removeEffects:",
         @"liftFromPrimaryStoryline": @"liftFromSpine:",
         @"overwriteToPrimaryStoryline": @"collapseToSpine:",
-        @"createStoryline":  @"createStoryline:",
+        @"createStoryline":  @"createAnchoredSpine:",
         @"collapseToConnectedStoryline": @"collapseToConnectedStoryline:",
 
         // Timeline view
@@ -2652,7 +2652,7 @@ NSDictionary *SpliceKit_handleTimelineAction(NSDictionary *params) {
         @"zoomIn":           @"zoomIn:",
         @"zoomOut":          @"zoomOut:",
         @"verticalZoomToFit": @"verticalZoomToFit:",
-        @"zoomToSamples":    @"zoomToSamples:",
+        @"zoomToSamples":    @"zoomtoSubframes:",
         @"toggleSnapping":   @"toggleSnapping:",
         @"toggleSkimming":   @"toggleSkimming:",
         @"toggleClipSkimming": @"toggleItemSkimming:",
@@ -2660,14 +2660,14 @@ NSDictionary *SpliceKit_handleTimelineAction(NSDictionary *params) {
         @"toggleInspector":  @"toggleInspector:",
         @"toggleTimeline":   @"toggleTimeline:",
         @"toggleTimelineIndex": @"toggleTimelineIndex:",
-        @"toggleInspectorHeight": @"toggleInspectorHeight:",
-        @"showPrecisionEditor": @"showPrecisionEditor:",
-        @"showAudioLanes":   @"showAudioLanes:",
-        @"expandSubroles":   @"expandSubroles:",
-        @"timelineHistoryBack": @"timelineHistoryBack:",
-        @"timelineHistoryForward": @"timelineHistoryForward:",
+        @"toggleInspectorHeight": @"toggleFullHeightInspector:",
+        @"showPrecisionEditor": @"togglePrecisionEditor:",
+        @"showAudioLanes":   @"toggleAllAudioLanes:",
+        @"expandSubroles":   @"toggleAllSubroles:",
+        @"timelineHistoryBack": @"selectPreviousTimelineItem:",
+        @"timelineHistoryForward": @"selectNextTimelineItem:",
         @"beatDetectionGrid": @"toggleBeatDetectionGrid:",
-        @"timelineScrolling": @"toggleTimelineScrolling:",
+        @"timelineScrolling": @"toggleScrollingTimelineDuringPlayback:",
         @"enterFullScreen":  @"toggleFullScreen:",
 
         // Render
@@ -2688,8 +2688,8 @@ NSDictionary *SpliceKit_handleTimelineAction(NSDictionary *params) {
 
         // Paste variants
         @"pasteAsConnected": @"pasteAnchored:",
-        @"pasteEffects":     @"pasteEffects:",
-        @"pasteAttributes":  @"pasteAttributes:",
+        @"pasteEffects":     @"pasteAllAttributes:",
+        @"pasteAttributes":  @"pasteSomeAttributes:",
         @"removeAttributes": @"removeAttributes:",
         @"copyAttributes":   @"copyAttributes:",
 
@@ -2725,31 +2725,31 @@ NSDictionary *SpliceKit_handleTimelineAction(NSDictionary *params) {
         @"expandAudio":      @"splitEdit:",
         @"expandAudioComponents": @"toggleAudioComponents:",
         @"addChannelEQ":     @"addChannelEQ:",
-        @"enhanceAudio":     @"enhanceAudio:",
-        @"matchAudio":       @"matchAudio:",
+        @"enhanceAudio":     @"toggleEnhanceAudio:",
+        @"matchAudio":       @"toggleMatchAudio:",
 
         // Show/hide editors
         @"showVideoAnimation": @"showTimelineCurveEditor:",
         @"showAudioAnimation": @"showTimelineCurveEditor:",
         @"soloAnimation":    @"collapseTimelineCurveEditor:",
-        @"showTrackingEditor": @"showTrackingEditor:",
+        @"showTrackingEditor": @"toggleTrackingEditor:",
         @"showCinematicEditor": @"showCinematicEditor:",
-        @"showMagneticMaskEditor": @"showMagneticMaskEditor:",
+        @"showMagneticMaskEditor": @"toggleSegmentationMaskEditor:",
         @"enableBeatDetection": @"enableBeatDetection:",
 
         // Clip operations
         @"synchronizeClips": @"mergeClips:",
         @"openClip":         @"openInTimeline:",
-        @"renameClip":       @"renameClip:",
-        @"addToSoloedClips": @"addToSoloedClips:",
-        @"referenceNewParentClip": @"referenceNewParentClip:",
+        @"renameClip":       @"startEditingTitleForItem:",
+        @"addToSoloedClips": @"modifySolo:",
+        @"referenceNewParentClip": @"makeClipsUnique:",
 
         // Color correction extras
         @"balanceColor":     @"toggleBalanceColor:",
-        @"matchColor":       @"matchColor:",
+        @"matchColor":       @"toggleMatchColor:",
         @"addMagneticMask":  @"addObjectMaskEffect:",
         @"smartConform":     @"autoReframe:",
-        @"enhanceLightAndColor": @"enhanceLightAndColor:",
+        @"enhanceLightAndColor": @"addEnhanceLightAndColorEffect:",
 
         // Adjustment clip
         @"addAdjustmentClip": @"connectAdjustmentClip:",
@@ -2769,42 +2769,42 @@ NSDictionary *SpliceKit_handleTimelineAction(NSDictionary *params) {
 
         // Keywords
         @"showKeywordEditor": @"toggleKeywordEditor:",
-        @"removeAllKeywords": @"removeAllKeywords:",
-        @"removeAnalysisKeywords": @"removeAnalysisKeywords:",
+        @"removeAllKeywords": @"removeAllKeywordsFromSelection:",
+        @"removeAnalysisKeywords": @"removeAllAnalysisKeywordsFromSelection:",
 
         // Hide clip
         @"hideClip":         @"hideClip:",
 
         // Audition
-        @"createAudition":   @"createAudition:",
-        @"finalizeAudition": @"finalizeAudition:",
-        @"nextAuditionPick": @"nextAuditionPick:",
-        @"previousAuditionPick": @"previousAuditionPick:",
+        @"createAudition":   @"makeVariantGroupFromSelection:",
+        @"finalizeAudition": @"finalizePickOfSelectedVariant:",
+        @"nextAuditionPick": @"selectNextVariantInSelection:",
+        @"previousAuditionPick": @"selectPreviousVariantInSelection:",
 
         // Captions
         @"addCaption":       @"addCaption:",
         @"splitCaption":     @"splitCaptions:",
-        @"resolveOverlaps":  @"resolveCaptionOverlaps:",
+        @"resolveOverlaps":  @"resolveOverlaps:",
 
         // Multicam
-        @"createMulticamClip": @"createMulticamClip:",
+        @"createMulticamClip": @"createMultiAngleClip:",
 
         // Source media
-        @"revealInBrowser":  @"revealSourceInBrowser:",
-        @"revealProjectInBrowser": @"revealProjectInBrowser:",
+        @"revealInBrowser":  @"revealAncestor:",
+        @"revealProjectInBrowser": @"revealProject:",
         @"revealInFinder":   @"revealInFinder:",
         @"moveToTrash":      @"moveToTrash:",
 
         // Library
         @"closeLibrary":     @"closeLibrary:",
         @"libraryProperties": @"showLibraryProperties:",
-        @"consolidateEventMedia": @"consolidateEventMedia:",
+        @"consolidateEventMedia": @"consolidateFiles:",
         @"mergeEvents":      @"mergeEvents:",
         @"deleteGeneratedFiles": @"deleteGeneratedFiles:",
 
         // Find
         @"find":             @"performFindPanelAction:",
-        @"findAndReplaceTitle": @"findAndReplaceTitleText:",
+        @"findAndReplaceTitle": @"findAndReplace:",
 
         // Project properties
         @"projectProperties": @"showProjectProperties:",
@@ -15575,17 +15575,17 @@ static NSDictionary *SpliceKit_handleViewToggle(NSDictionary *params) {
         @"audioMeter":      @"toggleAudioMeters:",
         @"keywordEditor":   @"toggleKeywordEditor:",
         @"timelineIndex":   @"toggleTimelineIndex:",
-        @"precisionEditor": @"showPrecisionEditor:",
+        @"precisionEditor": @"togglePrecisionEditor:",
         @"retimeEditor":    @"toggleRetimeEditor:",
         @"audioCurves":     @"toggleAudioCurves:",
         @"videoAnimation":  @"showTimelineCurveEditor:",
         @"audioAnimation":  @"showTimelineCurveEditor:",
-        @"multicamViewer":  @"toggleAngleViewer:",
-        @"360viewer":       @"toggle360Viewer:",
+        @"multicamViewer":  @"showMultiangle:",
+        @"360viewer":       @"show360:",
         @"fullscreenViewer": @"toggleFullScreenViewer:",
         @"backgroundTasks": @"goToBackgroundTaskList:",
         @"voiceover":       @"toggleVoiceoverRecordView:",
-        @"comparisonViewer": @"toggleComparisonViewer:",
+        @"comparisonViewer": @"toggleCompareViewer:",
     };
 
     NSString *selector = panelMap[panel];
@@ -27736,6 +27736,9 @@ NSDictionary *SpliceKit_handleRequest(NSDictionary *request) {
     } else if ([method isEqualToString:@"diag.selectorImplementors"]) {
         extern NSDictionary *SpliceKit_handleDiagSelectorImplementors(NSDictionary *);  // mikagosz
         result = SpliceKit_handleDiagSelectorImplementors(params);
+    } else if ([method isEqualToString:@"diag.menuActions"]) {
+        extern NSDictionary *SpliceKit_handleDiagMenuActions(NSDictionary *);  // mikagosz
+        result = SpliceKit_handleDiagMenuActions(params);
     } else if ([method isEqualToString:@"system.callMethod"]) {
         result = SpliceKit_handleSystemCallMethod(params);
     } else if ([method isEqualToString:@"system.swizzle"]) {

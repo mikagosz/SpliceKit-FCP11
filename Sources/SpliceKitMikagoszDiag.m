@@ -9,6 +9,7 @@
 //
 
 #import <Foundation/Foundation.h>
+#import <AppKit/AppKit.h>
 #import <objc/runtime.h>
 
 NSDictionary *SpliceKit_handleDiagSelectorImplementors(NSDictionary *params) {
@@ -59,4 +60,42 @@ NSDictionary *SpliceKit_handleDiagSelectorImplementors(NSDictionary *params) {
              @"missing": missing,
              @"implementors": found,
              @"totals": totals};
+}
+
+// diag.menuActions — całe główne menu FCP: ścieżka pozycji, akcja (selektor), skrót.
+// Źródło prawdziwych nazw akcji w danej wersji FCP — pozycja menu wie, co wywołuje.
+static void SpliceKit_mikagoszCollectMenu(NSMenu *menu, NSString *path, NSMutableArray *out, int depth) {
+    if (!menu || depth > 8) return;
+    for (NSMenuItem *item in menu.itemArray) {
+        if (item.isSeparatorItem) continue;
+        NSString *title = item.title.length ? item.title : @"(bez tytułu)";
+        NSString *itemPath = path.length ? [NSString stringWithFormat:@"%@ > %@", path, title] : title;
+        if (item.action) {
+            NSMutableDictionary *entry = [@{@"path": itemPath,
+                                            @"action": NSStringFromSelector(item.action)} mutableCopy];
+            if (item.keyEquivalent.length) {
+                NSMutableString *key = [NSMutableString string];
+                NSEventModifierFlags m = item.keyEquivalentModifierMask;
+                if (m & NSEventModifierFlagControl) [key appendString:@"⌃"];
+                if (m & NSEventModifierFlagOption) [key appendString:@"⌥"];
+                if (m & NSEventModifierFlagShift) [key appendString:@"⇧"];
+                if (m & NSEventModifierFlagCommand) [key appendString:@"⌘"];
+                [key appendString:item.keyEquivalent];
+                entry[@"key"] = key;
+            }
+            if (item.target) entry[@"target"] = NSStringFromClass([item.target class]);
+            [out addObject:entry];
+        }
+        if (item.hasSubmenu) SpliceKit_mikagoszCollectMenu(item.submenu, itemPath, out, depth + 1);
+    }
+}
+
+NSDictionary *SpliceKit_handleDiagMenuActions(NSDictionary *params) {
+    __block NSMutableArray *items = [NSMutableArray array];
+    void (^collect)(void) = ^{
+        NSMenu *main = [NSApplication sharedApplication].mainMenu;
+        SpliceKit_mikagoszCollectMenu(main, @"", items, 0);
+    };
+    if ([NSThread isMainThread]) collect(); else dispatch_sync(dispatch_get_main_queue(), collect);
+    return @{@"count": @(items.count), @"items": items};
 }
