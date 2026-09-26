@@ -1,0 +1,82 @@
+# Narzędzia MCP dopuszczone w wersji mikagosz — reszta nie jest rejestrowana.
+# Zakres: montaż za mnie + transkrypcja i cięcie po tekście + napisy.
+# Pełny zestaw bez filtra: SPLICEKIT_ALL_TOOLS=1.
+# Uzasadnienie (co i czemu poza listą): README.md, sekcja „What is different from upstream”.
+
+# Most
+bridge_status
+bridge_alive
+async_status
+
+# Biblioteka i projekt
+get_active_libraries
+is_library_updating
+open_project
+create_event
+browser_list_clips
+browser_append_clip
+import_media
+
+# Odczyt timeline'u
+get_timeline_clips
+get_selected_clips
+get_playhead_position
+analyze_timeline
+verify_action
+detect_scene_changes
+capture_viewer
+capture_timeline
+
+# Nawigacja i odtwarzanie
+timeline_navigation_action
+playback_action
+seek_to_time
+set_timeline_range
+
+# Montaż
+timeline_edit_action
+timeline_destructive_action
+history_action
+batch_timeline_actions
+add_markers_at_times
+blade_at_times
+mark_scene_changes
+blade_scene_changes
+select_clip_in_lane
+select_tool
+
+# Efekty, przejścia, tytuły
+list_effects
+apply_effect
+list_transitions
+apply_transition
+insert_title
+get_inspector_properties
+set_inspector_property
+
+# Transkrypcja
+open_transcript
+close_transcript
+get_transcript
+search_transcript
+delete_transcript_words
+move_transcript_words
+delete_transcript_silences
+set_silence_threshold
+set_transcript_speaker
+set_transcript_engine
+
+# Napisy
+generate_native_captions
+export_captions_srt
+
+# Eksport
+share_project
+export_xml
+import_fcpxml
+
+# Okna dialogowe
+detect_dialog
+click_dialog_button
+fill_dialog_field
+dismiss_dialog

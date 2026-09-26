@@ -7951,6 +7951,28 @@ def visionpro_set_max_clients(max: int) -> str:
     return _fmt(r)
 
 
+def _apply_allowlist(server) -> None:
+    """mikagosz: zostaw tylko narzędzia z mcp/mikagosz-tools.txt.
+
+    SPLICEKIT_ALL_TOOLS=1 wyłącza filtr (pełny zestaw upstream).
+    """
+    import os
+    from pathlib import Path
+
+    if os.environ.get("SPLICEKIT_ALL_TOOLS") == "1":
+        return
+    path = Path(__file__).resolve().parent / "mikagosz-tools.txt"
+    allowed = {
+        line.strip()
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    }
+    for tool in list(server._tool_manager.list_tools()):
+        if tool.name not in allowed:
+            server.remove_tool(tool.name)
+
+
 # MCP servers communicate over stdio -- the AI tool framework handles the transport
 if __name__ == "__main__":
+    _apply_allowlist(mcp)
     mcp.run(transport="stdio")
