@@ -6,7 +6,9 @@ let package = Package(
     name: "parakeet-transcriber",
     platforms: [.macOS(.v14)],
     dependencies: [
-        .package(url: "https://github.com/FluidInference/FluidAudio.git", from: "0.12.0"),
+        // mikagosz: przypięte — od 0.13.7 transcribe(_:source:) zamienia się
+        // w transcribe(_:decoderState:language:) i main.swift się nie kompiluje.
+        .package(url: "https://github.com/FluidInference/FluidAudio.git", exact: "0.13.6"),
     ],
     targets: [
         .executableTarget(
