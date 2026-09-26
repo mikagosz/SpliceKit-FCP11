@@ -27733,6 +27733,9 @@ NSDictionary *SpliceKit_handleRequest(NSDictionary *request) {
         result = SpliceKit_handleSystemGetClasses(params);
     } else if ([method isEqualToString:@"system.getMethods"]) {
         result = SpliceKit_handleSystemGetMethods(params);
+    } else if ([method isEqualToString:@"diag.selectorImplementors"]) {
+        extern NSDictionary *SpliceKit_handleDiagSelectorImplementors(NSDictionary *);  // mikagosz
+        result = SpliceKit_handleDiagSelectorImplementors(params);
     } else if ([method isEqualToString:@"system.callMethod"]) {
         result = SpliceKit_handleSystemCallMethod(params);
     } else if ([method isEqualToString:@"system.swizzle"]) {
