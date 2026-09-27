@@ -2810,7 +2810,7 @@ static NSDictionary *SpliceKit_handleTimelineActionImpl(NSDictionary *params) {
         @"copyTimecode":     @"copyTimecode:",
 
         // Project operations
-        @"duplicateProject": @"duplicate:",
+        @"duplicateProject": @"duplicateProjectAs:",   // mikagosz: 11.2 Edit > Duplicate Project As… (duplicate: to ogólne Edit > Duplicate)
         @"snapshotProject":  @"snapshotProject:",
 
         // Audio operations
@@ -2892,7 +2892,7 @@ static NSDictionary *SpliceKit_handleTimelineActionImpl(NSDictionary *params) {
         @"libraryProperties": @"showLibraryProperties:",
         @"consolidateEventMedia": @"consolidateFiles:",
         @"mergeEvents":      @"mergeEvents:",
-        @"deleteGeneratedFiles": @"deleteGeneratedFiles:",
+        @"deleteGeneratedFiles": @"purgeRenderFiles:",   // mikagosz: 11.2 File > Delete Render Files…; deleteGeneratedFiles: nie ma nikt
 
         // Find
         @"find":             @"performFindPanelAction:",
