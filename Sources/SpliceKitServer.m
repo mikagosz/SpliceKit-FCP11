@@ -13643,7 +13643,14 @@ static NSDictionary *SpliceKit_handleBrowserListClips(NSDictionary *params) {
                     info[@"index"] = @(clipIndex++);
                     info[@"event"] = eventName;
                     info[@"class"] = NSStringFromClass([clip class]);
-                    info[@"isProject"] = @([projectSeqs containsObject:[NSValue valueWithNonretainedObject:clip]]);
+                    // mikagosz: przeglądarka daje inne instancje niż event.projects — porównanie
+                    // wskaźników dawało zawsze NO (zmierzone po przebudowie). FFAnchoredSequence
+                    // ma własne -isProject; lista projects zostaje jako zapas.
+                    SEL isProjSel = NSSelectorFromString(@"isProject");
+                    BOOL isProj = [clip respondsToSelector:isProjSel]
+                        ? ((BOOL (*)(id, SEL))objc_msgSend)(clip, isProjSel)
+                        : [projectSeqs containsObject:[NSValue valueWithNonretainedObject:clip]];
+                    info[@"isProject"] = @(isProj);
 
                     if ([clip respondsToSelector:@selector(displayName)]) {
                         id name = ((id (*)(id, SEL))objc_msgSend)(clip, @selector(displayName));
