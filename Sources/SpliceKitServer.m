@@ -15642,8 +15642,23 @@ static NSDictionary *SpliceKit_handleInspectorGet(NSDictionary *params) {
 
 static NSDictionary *SpliceKit_handleInspectorSet(NSDictionary *params) {
     NSString *property = params[@"property"]; // "opacity", "positionX", "positionY", "rotation", "scaleX", "scaleY", "volume", etc.
-    NSNumber *value = params[@"value"];
-    if (!property || !value) return @{@"error": @"property and value parameters required"};
+    id rawValue = params[@"value"];
+    if (!property || !rawValue) return @{@"error": @"property and value parameters required"};
+    // mikagosz: każda właściwość jest liczbowa. Było: [@"abc" doubleValue] = 0 → scaleX "abc"
+    // ustawiało skalę 0 %. Liczba albo napis, który w całości jest liczbą; true/false też odpada.
+    NSNumber *value = nil;
+    if ([rawValue isKindOfClass:[NSNumber class]] && CFGetTypeID((__bridge CFTypeRef)rawValue) != CFBooleanGetTypeID()) {
+        value = rawValue;
+    } else if ([rawValue isKindOfClass:[NSString class]]) {
+        NSScanner *scanner = [NSScanner scannerWithString:
+            [(NSString *)rawValue stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]]];
+        scanner.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+        double parsed = 0;
+        if ([scanner scanDouble:&parsed] && scanner.isAtEnd) value = @(parsed);
+    }
+    if (!value || !isfinite([value doubleValue])) {
+        return @{@"error": [NSString stringWithFormat:@"'%@' needs a number, got '%@'", property, rawValue]};
+    }
 
     __block NSDictionary *result = nil;
     SpliceKit_executeOnMainThread(^{
