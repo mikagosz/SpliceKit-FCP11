@@ -2474,6 +2474,26 @@ static id SpliceKit_getEditorContainer(void) {
 // Fire an IBAction-style method on the timeline module.
 // Most FCP editing commands are -(void)something:(id)sender methods
 // on FFAnchoredTimelineModule. We just call them with sender=nil.
+// mikagosz: czy FCP pokazałby tę pozycję menu jako aktywną? Most woła akcje z pominięciem
+// walidacji menu — collapseToConnectedStoryline na klipie z głównej ścieżki (w menu wyszarzone)
+// wpędził FCP w nieskończoną rekurencję i go wyłożył (2026-09-27 21:47). Pytamy cel tak,
+// jak pyta menu: validateMenuItem: / validateUserInterfaceItem: na atrapie NSMenuItem.
+// Brak walidatora = nie wiemy = puszczamy (YES).
+static BOOL SpliceKit_actionEnabledOnTarget(id target, SEL sel) {
+    if (!target || !sel) return YES;
+    @try {
+        NSMenuItem *mi = [[NSMenuItem alloc] initWithTitle:@"" action:sel keyEquivalent:@""];
+        if ([target respondsToSelector:@selector(validateMenuItem:)]) {
+            return ((BOOL (*)(id, SEL, id))objc_msgSend)(target, @selector(validateMenuItem:), mi);
+        }
+        if ([target respondsToSelector:@selector(validateUserInterfaceItem:)]) {
+            return ((BOOL (*)(id, SEL, id))objc_msgSend)(target, @selector(validateUserInterfaceItem:), mi);
+        }
+    } @catch (NSException *e) {}
+    return YES;
+}
+static BOOL sSpliceKitForceAction = NO;   // ustawiane z params[@"force"] na czas jednego timeline.action
+
 static NSDictionary *SpliceKit_sendTimelineAction(NSString *selectorName) {
     __block NSDictionary *result = nil;
 
@@ -2492,6 +2512,13 @@ static NSDictionary *SpliceKit_sendTimelineAction(NSString *selectorName) {
                 return;
             }
 
+            if (!sSpliceKitForceAction && !SpliceKit_actionEnabledOnTarget(timeline, sel)) {
+                result = @{@"error": [NSString stringWithFormat:
+                    @"%@ is disabled in FCP for the current state (the menu item would be greyed out) — "
+                    @"not sent; firing it anyway can crash FCP. Pass force=true to override.", selectorName],
+                    @"disabled": @YES};
+                return;
+            }
             ((void (*)(id, SEL, id))objc_msgSend)(timeline, sel, nil);
             result = @{@"action": selectorName, @"status": @"ok"};
         } @catch (NSException *e) {
@@ -2544,7 +2571,16 @@ static NSUInteger SpliceKit_transitionCount(id timeline);
 // FCP's editing engine. These were found by disassembling Flexo.framework
 // and looking at IB action connections, responder chain handlers, and
 // menu item targets.
+static NSDictionary *SpliceKit_handleTimelineActionImpl(NSDictionary *params);
 NSDictionary *SpliceKit_handleTimelineAction(NSDictionary *params) {
+    BOOL prev = sSpliceKitForceAction;
+    sSpliceKitForceAction = [params[@"force"] boolValue];
+    NSDictionary *r = SpliceKit_handleTimelineActionImpl(params);
+    sSpliceKitForceAction = prev;
+    return r;
+}
+
+static NSDictionary *SpliceKit_handleTimelineActionImpl(NSDictionary *params) {
     SpliceKit_installEffectDragSwizzlesNow();
 
     NSString *action = params[@"action"];
@@ -3420,6 +3456,12 @@ NSDictionary *SpliceKit_handleTimelineAction(NSDictionary *params) {
                     for (NSUInteger i = 0; i < targets.count; i++) {
                         id t = targets[i];
                         if (t == [NSNull null] || ![t respondsToSelector:sel]) continue;
+                        if (!sSpliceKitForceAction && !SpliceKit_actionEnabledOnTarget(t, sel)) {
+                            direct = @{@"error": [NSString stringWithFormat:
+                                @"%@ is disabled in FCP for the current state (%@ says the menu item would be greyed out). Pass force=true to override.",
+                                selector, names[i]], @"disabled": @YES};
+                            return;
+                        }
                         ((void (*)(id, SEL, id))objc_msgSend)(t, sel, nil);
                         direct = @{@"action": selector, @"status": @"ok", @"target": names[i]};
                         return;

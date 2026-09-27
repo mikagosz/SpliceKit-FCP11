@@ -1023,25 +1023,33 @@ def timeline_navigation_action(action: str) -> str:
 
 
 @mcp.tool(annotations=_tool_annotations("timeline_edit_action"))
-def timeline_edit_action(action: str) -> str:
-    """Use this tool for non-destructive timeline edits like markers, effects, titles, and range changes."""
+def timeline_edit_action(action: str, force: bool = False) -> str:
+    """Use this tool for non-destructive timeline edits like markers, effects, titles, and range changes.
+
+    Actions FCP would show greyed out in its menu for the current state are refused
+    (firing them anyway can crash FCP). force=True sends them regardless.
+    """
     if action not in TIMELINE_EDIT_ACTIONS:
         return (
             f"Error: '{action}' is not a supported non-destructive edit action. "
             "Use timeline_navigation_action(), timeline_destructive_action(), history_action(), or legacy timeline_action()."
         )
-    return _call_or_error("timeline.action", action=action)
+    return _call_or_error("timeline.action", action=action, **({"force": True} if force else {}))
 
 
 @mcp.tool(annotations=_tool_annotations("timeline_destructive_action"))
-def timeline_destructive_action(action: str) -> str:
-    """Use this tool for destructive timeline edits such as delete, cut, blade, replace, trim, and retime."""
+def timeline_destructive_action(action: str, force: bool = False) -> str:
+    """Use this tool for destructive timeline edits such as delete, cut, blade, replace, trim, and retime.
+
+    Actions FCP would show greyed out in its menu for the current state are refused
+    (firing them anyway can crash FCP). force=True sends them regardless.
+    """
     if action not in TIMELINE_DESTRUCTIVE_ACTIONS:
         return (
             f"Error: '{action}' is not a supported destructive action. "
             "Use timeline_navigation_action(), timeline_edit_action(), history_action(), or legacy timeline_action()."
         )
-    return _call_or_error("timeline.action", action=action)
+    return _call_or_error("timeline.action", action=action, **({"force": True} if force else {}))
 
 
 @mcp.tool(annotations=_tool_annotations("history_action"))
