@@ -65,7 +65,14 @@ BOOL SpliceKit_isMainThreadInRPCDispatch(void) {
     return [NSThread isMainThread] && sMainThreadRPCDispatchDepth > 0;
 }
 
+// mikagosz: czy OSTATNIE executeOnMainThread z tego wątku przekroczyło 20 s (np. akcja otworzyła
+// okno modalne — Consolidate Files — i blok jeszcze się nie skończył). Wołający może wtedy nie
+// próbować zapasowych dróg, które zaplanowałyby tę samą akcję drugi raz.
+static __thread BOOL sLastMainThreadDispatchTimedOut = NO;
+BOOL SpliceKit_lastMainThreadDispatchTimedOut(void) { return sLastMainThreadDispatchTimedOut; }
+
 void SpliceKit_executeOnMainThread(dispatch_block_t block) {
+    sLastMainThreadDispatchTimedOut = NO;
     if ([NSThread isMainThread]) {
         sMainThreadRPCDispatchDepth++;
         block();
@@ -85,6 +92,7 @@ void SpliceKit_executeOnMainThread(dispatch_block_t block) {
         long waitResult = dispatch_semaphore_wait(sem,
             dispatch_time(DISPATCH_TIME_NOW, 20LL * NSEC_PER_SEC));
         if (waitResult != 0) {
+            sLastMainThreadDispatchTimedOut = YES;
             NSLog(@"[SpliceKit] WARNING: Main thread dispatch timed out (20s). "
                   @"Main thread may be blocked by startup or modal dialog.");
         }

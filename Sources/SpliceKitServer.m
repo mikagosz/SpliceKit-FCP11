@@ -71,6 +71,7 @@ static NSDictionary *SpliceKit_sendPlayerAction(NSString *selectorName);
 id SpliceKit_getActiveTimelineModule(void);
 static id SpliceKit_getEditorContainer(void);
 static id SpliceKit_getAppDelegate(void);
+extern BOOL SpliceKit_lastMainThreadDispatchTimedOut(void);
 static id SpliceKit_getSelectedTimelineItem(id timeline);
 static id SpliceKit_getClipEffectStack(id clip);
 static id SpliceKit_getSelectedClipEffectStack(id timeline, id *outClip);
@@ -3439,6 +3440,11 @@ static NSDictionary *SpliceKit_handleTimelineActionImpl(NSDictionary *params) {
 
     // First try on the timeline module directly (fastest, most specific)
     NSDictionary *result = SpliceKit_sendTimelineAction(selector);
+    if (!result && SpliceKit_lastMainThreadDispatchTimedOut()) {
+        return @{@"status": @"ok", @"action": selector, @"modal": @YES,
+                 @"note": @"FCP's main thread stayed busy for 20 s — the action most likely opened a modal dialog. "
+                          @"Use detect_dialog / click_dialog_button / dismiss_dialog."};
+    }
 
     // mikagosz: potem znane obiekty WPROST, zanim łańcuch responderów. Przy FCP w tle nie ma
     // key/main window, więc łańcuch kończy na NSApp i delegacie: akcje widoku osi czasu,
@@ -3476,6 +3482,13 @@ static NSDictionary *SpliceKit_handleTimelineActionImpl(NSDictionary *params) {
                 }
             });
             if (direct) return direct;
+            if (SpliceKit_lastMainThreadDispatchTimedOut()) {
+                // mikagosz: akcja siedzi w oknie modalnym (np. Consolidate Files) — drugiej drogi
+                // nie próbujemy, bo zaplanowałaby tę samą akcję ponownie.
+                return @{@"status": @"ok", @"action": selector, @"modal": @YES,
+                         @"note": @"FCP's main thread stayed busy for 20 s — the action most likely opened a modal dialog. "
+                                  @"Use detect_dialog / click_dialog_button / dismiss_dialog."};
+            }
         }
         if ([errMsg containsString:@"does not respond"] || [errMsg containsString:@"No active"]) {
             NSMutableDictionary *chain = [SpliceKit_sendAppAction(selector) mutableCopy];
