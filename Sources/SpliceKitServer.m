@@ -1512,6 +1512,20 @@ static id SpliceKit_getUndoManager(void) {
     return ((id (*)(id, SEL))objc_msgSend)(doc, @selector(undoManager));
 }
 
+// mikagosz: kilka edycji z jednego wywołania (bladeAtTimes, addMarkers, scena) = JEDEN krok
+// cofania. Bez tego blade_at_times([3, 6.4, 9]) wymagało trzech undo — jedno undo zostawiało
+// dwa cięcia (zmierzone 2026-09-27). Wołać na głównym wątku, w tym samym bloku co edycje.
+static NSUndoManager *SpliceKit_beginUndoGroup(NSString *name) {
+    NSUndoManager *um = (NSUndoManager *)SpliceKit_getUndoManager();
+    if (!um) return nil;
+    [um beginUndoGrouping];
+    if (name) [um setActionName:name];
+    return um;
+}
+static void SpliceKit_endUndoGroup(NSUndoManager *um) {
+    if (um && um.groupingLevel > 0) [um endUndoGrouping];
+}
+
 // Helper: apply a specific item order to the spine. Used by both reorder and undo.
 static void SpliceKit_applySpineOrder(id spine, NSArray *newItems) {
     SEL removeSel = NSSelectorFromString(@"removeObjectFromContainedItemsAtIndex:");
@@ -4548,10 +4562,14 @@ NSDictionary *SpliceKit_handlePlayback(NSDictionary *params) {
                     double frame = fd.timescale > 0 ? (double)fd.value / fd.timescale : 1.0 / 30;
                     double dur = SpliceKit_timelineDurationSeconds(timeline);
                     double now = before.timescale > 0 ? (double)before.value / before.timescale : 0;
-                    double target = now + [frameSteps[selector] intValue] * frame;
-                    if (target < 0) target = 0;
-                    if (dur > 0 && target > dur) target = dur;
-                    SpliceKit_CMTime t = SpliceKit_buildCMTime(target, timeline);
+                    // mikagosz: liczymy w całych klatkach — sekundy przez buildCMTime obcinały
+                    // ułamek przy każdym kroku (60 × nextFrame od 0 dawało 1,967 s zamiast 2,0).
+                    long long k = llround(now / frame) + [frameSteps[selector] intValue];
+                    long long maxK = dur > 0 ? (long long)floor(dur / frame + 1e-6) : LLONG_MAX;
+                    if (k < 0) k = 0;
+                    if (k > maxK) k = maxK;
+                    SpliceKit_CMTime t = fd.timescale > 0 ? (SpliceKit_CMTime){k * fd.value, fd.timescale, 1, 0}
+                                                          : SpliceKit_buildCMTime(k * frame, timeline);
                     ((void (*)(id, SEL, SpliceKit_CMTime))objc_msgSend)(timeline, @selector(setPlayheadTime:), t);
                 } else {
                     id target = timeline;
@@ -4651,7 +4669,7 @@ NSDictionary *SpliceKit_handlePlaybackSeek(NSDictionary *params) {
             if (dur > 0 && secs > dur) secs = dur;
             if (secs < 0) secs = 0;
             SpliceKit_CMTime targetTime;
-            targetTime.value = (int64_t)(secs * timescale);
+            targetTime.value = (int64_t)llround(secs * timescale);   // mikagosz: zaokrąglenie, nie obcięcie
             targetTime.timescale = timescale;
             targetTime.flags = 1; // kCMTimeFlags_Valid
             targetTime.epoch = 0;
@@ -5026,7 +5044,7 @@ static SpliceKit_CMTime SpliceKit_buildCMTime(double seconds, id timeline) {
         }
     }
     SpliceKit_CMTime t;
-    t.value = (int64_t)(seconds * timescale);
+    t.value = (int64_t)llround(seconds * timescale);   // mikagosz: było obcięcie — 0,7 s dawało 419/600
     t.timescale = timescale;
     t.flags = 1; // kCMTimeFlags_Valid
     t.epoch = 0;
@@ -5171,8 +5189,13 @@ static NSDictionary *SpliceKit_handleBatchAddMarkers(NSDictionary *params) {
             }
 
             // For renaming markers after creation
+            // mikagosz: w 11.2 rename jest na sekwencji, nie na module osi czasu, a
+            // markersInTimeRange: nie istnieje — nazwy przepadały („Marker 1” zamiast podanej).
             SEL renameSel = NSSelectorFromString(@"actionChangeMarkerDisplayName:marker:error:");
-            BOOL canRename = [timeline respondsToSelector:renameSel];
+            id renameTarget = [sequence respondsToSelector:renameSel] ? sequence
+                            : ([timeline respondsToSelector:renameSel] ? timeline : nil);
+            BOOL canRename = renameTarget != nil;
+            SEL markerItemsSel = NSSelectorFromString(@"markerAnchoredItems");
 
             typedef BOOL (*AddMarkerFn)(id, SEL, id, BOOL, BOOL, SpliceKit_CMTimeRange, NSError **);
             AddMarkerFn addMarker = (AddMarkerFn)objc_msgSend;
@@ -5181,6 +5204,8 @@ static NSDictionary *SpliceKit_handleBatchAddMarkers(NSDictionary *params) {
             NSUInteger applied = 0;
             NSMutableArray *results = [NSMutableArray array];
 
+            NSUndoManager *undoGroup = SpliceKit_beginUndoGroup(@"Add Markers");
+            @try {
             for (NSDictionary *m in markers) {
                 double t = [m[@"time"] doubleValue];
                 NSString *name = m[@"name"];
@@ -5206,12 +5231,29 @@ static NSDictionary *SpliceKit_handleBatchAddMarkers(NSDictionary *params) {
                 SpliceKit_CMTime markerTime = {(int64_t)round(absoluteTime * ts), ts, 1, 0};
                 SpliceKit_CMTimeRange range = {markerTime, frameDur};
                 NSError *err = nil;
+                NSSet *markersBefore = nil;
+                if ([targetClip respondsToSelector:markerItemsSel]) {
+                    id mb = ((id (*)(id, SEL))objc_msgSend)(targetClip, markerItemsSel);
+                    if ([mb isKindOfClass:[NSArray class]] || [mb isKindOfClass:[NSSet class]]) markersBefore = [NSSet setWithArray:[mb isKindOfClass:[NSSet class]] ? [mb allObjects] : mb];
+                }
                 BOOL ok = addMarker(sequence, addSel, targetClip, isToDo, isChapter, range, &err);
+                BOOL renamed = NO;
+                if (ok && name.length > 0 && canRename && markersBefore && [targetClip respondsToSelector:markerItemsSel]) {
+                    id ma = ((id (*)(id, SEL))objc_msgSend)(targetClip, markerItemsSel);
+                    NSArray *after = [ma isKindOfClass:[NSSet class]] ? [ma allObjects] : ([ma isKindOfClass:[NSArray class]] ? ma : @[]);
+                    for (id mk in after) {
+                        if ([markersBefore containsObject:mk]) continue;
+                        NSError *renameErr = nil;
+                        renamed = ((BOOL (*)(id, SEL, id, id, NSError **))objc_msgSend)(
+                            renameTarget, renameSel, name, mk, &renameErr);
+                        break;
+                    }
+                }
                 if (ok) {
                     applied++;
 
-                    // Rename the marker if a name was provided
-                    if (name.length > 0 && canRename) {
+                    // Rename the marker if a name was provided (stara droga upstream — zapas)
+                    if (name.length > 0 && canRename && !renamed) {
                         // Find the marker we just added on this clip by looking for a marker
                         // at the exact time we placed it
                         SEL markersSel = NSSelectorFromString(@"markersInTimeRange:");
@@ -5226,17 +5268,21 @@ static NSDictionary *SpliceKit_handleBatchAddMarkers(NSDictionary *params) {
                                 if (marker) {
                                     NSError *renameErr = nil;
                                     ((void (*)(id, SEL, id, id, NSError **))objc_msgSend)(
-                                        timeline, renameSel, name, marker, &renameErr);
+                                        renameTarget, renameSel, name, marker, &renameErr);
                                 }
                             }
                         }
                     }
 
-                    [results addObject:@{@"time": @(t), @"success": @YES}];
+                    [results addObject:@{@"time": @(t), @"success": @YES,
+                                         @"named": @(name.length == 0 || renamed)}];
                 } else {
                     [results addObject:@{@"time": @(t), @"success": @NO,
                         @"error": err ? [err localizedDescription] : @"unknown"}];
                 }
+            }
+            } @finally {
+                SpliceKit_endUndoGroup(undoGroup);
             }
 
             result = @{
@@ -5271,6 +5317,8 @@ static NSDictionary *SpliceKit_handleBladeAtTimes(NSDictionary *params) {
             NSUInteger applied = 0;
             NSMutableArray *results = [NSMutableArray array];
 
+            NSUndoManager *undoGroup = SpliceKit_beginUndoGroup(@"Blade");
+            @try {
             for (NSNumber *timeNum in sortedTimes) {
                 double t = [timeNum doubleValue];
                 SpliceKit_handlePlaybackSeek(@{@"seconds": @(t)});
@@ -5285,6 +5333,9 @@ static NSDictionary *SpliceKit_handleBladeAtTimes(NSDictionary *params) {
                     [results addObject:@{@"time": @(t), @"success": @NO,
                         @"error": bladeResult[@"error"] ?: @"blade failed"}];
                 }
+            }
+            } @finally {
+                SpliceKit_endUndoGroup(undoGroup);
             }
 
             result = @{
@@ -7847,6 +7898,9 @@ NSDictionary *SpliceKit_handleDetectSceneChanges(NSDictionary *params) {
                 }
 
                 // mikagosz: każde trafienie ma swój klip (sceneTargets) — nie „najdłuższy”.
+                NSUndoManager *undoGroup = SpliceKit_beginUndoGroup(
+                    [action isEqualToString:@"markers"] ? @"Scene Markers" : @"Blade at Scene Changes");
+                @try {
 
                 if ([action isEqualToString:@"markers"]) {
                     // Add markers programmatically via actionAddMarkerToAnchoredObject:isToDo:isChapter:withRange:error:
@@ -7881,6 +7935,9 @@ NSDictionary *SpliceKit_handleDetectSceneChanges(NSDictionary *params) {
                         SpliceKit_handleTimelineAction(@{@"action": @"blade"});
                         applied++;
                     }
+                }
+                } @finally {
+                    SpliceKit_endUndoGroup(undoGroup);
                 }
             } @catch (NSException *e) {
                 SpliceKit_log(@"Scene action error: %@", e.reason);
