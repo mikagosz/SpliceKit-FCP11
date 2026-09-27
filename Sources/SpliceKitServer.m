@@ -8281,82 +8281,64 @@ NSDictionary *SpliceKit_handleEffectsApply(NSDictionary *params) {
                     return [eid hasPrefix:@"..."] || [eid hasPrefix:@"/"];
                 };
 
-                // Search in three phases: exact, normalized, partial.
-                // Always prefer built-in over third-party across ALL phases.
-                NSString *thirdPartyFallback = nil;
-
-                // Phase 1: Exact match (case-insensitive)
-                for (NSString *eid in allIDs) {
-                    id type = ((id (*)(id, SEL, id))objc_msgSend)((id)ffEffect, typeSel, eid);
-                    if ([type isKindOfClass:[NSString class]] &&
-                        [(NSString *)type isEqualToString:@"effect.video.transition"]) continue;
-
-                    id dn = ((id (*)(id, SEL, id))objc_msgSend)((id)ffEffect, nameSel, eid);
-                    if ([dn isKindOfClass:[NSString class]] &&
-                        [[(NSString *)dn lowercaseString] isEqualToString:lowerName]) {
-                        if (isBuiltIn(eid)) {
-                            resolvedID = eid;
-                            break;
-                        } else if (!thirdPartyFallback) {
-                            thirdPartyFallback = eid;
-                        }
-                    }
-                }
-
-                // Phase 2: Normalized match (handles &/and, underscores, punctuation)
-                if (!resolvedID) {
+                // mikagosz: dokładna nazwa (potem znormalizowana) nakłada efekt tylko wtedy, gdy
+                // wszystkie trafienia są tego samego typu — „Blur” to w 11.2 i tytuł Build In/Out,
+                // i filtr LenoFX; było: wygrywał wbudowany tytuł. Fragment nazwy niczego nie nakłada,
+                // tylko zwraca kandydatów — „Gaussian Blur” trafiało jedynego „360° Gaussian Blur”,
+                // a zwykły nazywa się „Gaussian”. Wbudowane przed zewnętrznymi jak dotąd.
+                NSMutableArray *(^collect)(BOOL (^)(NSString *)) = ^NSMutableArray *(BOOL (^match)(NSString *)) {
+                    NSMutableArray *out = [NSMutableArray array];
                     for (NSString *eid in allIDs) {
                         id type = ((id (*)(id, SEL, id))objc_msgSend)((id)ffEffect, typeSel, eid);
-                        if ([type isKindOfClass:[NSString class]] &&
-                            [(NSString *)type isEqualToString:@"effect.video.transition"]) continue;
-
+                        NSString *typeStr = [type isKindOfClass:[NSString class]] ? type : @"";
+                        if ([typeStr isEqualToString:@"effect.video.transition"]) continue;
                         id dn = ((id (*)(id, SEL, id))objc_msgSend)((id)ffEffect, nameSel, eid);
-                        if ([dn isKindOfClass:[NSString class]] &&
-                            [normalize((NSString *)dn) isEqualToString:normalizedName]) {
-                            if (isBuiltIn(eid)) {
-                                resolvedID = eid;
-                                break;
-                            } else if (!thirdPartyFallback) {
-                                thirdPartyFallback = eid;
-                            }
-                        }
+                        if (![dn isKindOfClass:[NSString class]] || !match(dn)) continue;
+                        [out addObject:@{@"effectID": eid, @"name": dn, @"type": typeStr,
+                                         @"builtIn": @(isBuiltIn(eid))}];
                     }
-                }
+                    return out;
+                };
+                NSString *(^describe)(NSArray *) = ^NSString *(NSArray *list) {
+                    NSMutableArray *parts = [NSMutableArray array];
+                    for (NSDictionary *c in list)
+                        [parts addObject:[NSString stringWithFormat:@"%@ [%@%@]", c[@"name"],
+                            [c[@"type"] stringByReplacingOccurrencesOfString:@"effect." withString:@""],
+                            [c[@"builtIn"] boolValue] ? @"" : @", third-party"]];
+                    return [parts componentsJoinedByString:@"; "];
+                };
 
-                // Phase 3: Partial/substring match
-                // mikagosz: tylko gdy kandydat jest JEDEN. Było: pierwszy z brzegu — „Gaussian Blur”
-                // nakładało „360° Gaussian Blur” (w 11.2 zwykły nazywa się „Gaussian”).
-                if (!resolvedID && !thirdPartyFallback) {
-                    NSMutableArray *builtIn = [NSMutableArray array], *thirdParty = [NSMutableArray array];
-                    NSMutableArray *names = [NSMutableArray array];
-                    for (NSString *eid in allIDs) {
-                        id type = ((id (*)(id, SEL, id))objc_msgSend)((id)ffEffect, typeSel, eid);
-                        if ([type isKindOfClass:[NSString class]] &&
-                            [(NSString *)type isEqualToString:@"effect.video.transition"]) continue;
+                NSMutableArray *exact = collect(^BOOL(NSString *dn) { return [[dn lowercaseString] isEqualToString:lowerName]; });
+                if (!exact.count)
+                    exact = collect(^BOOL(NSString *dn) { return [normalize(dn) isEqualToString:normalizedName]; });
 
-                        id dn = ((id (*)(id, SEL, id))objc_msgSend)((id)ffEffect, nameSel, eid);
-                        if ([dn isKindOfClass:[NSString class]] &&
-                            [[(NSString *)dn lowercaseString] containsString:lowerName]) {
-                            [(isBuiltIn(eid) ? builtIn : thirdParty) addObject:eid];
-                            [names addObject:dn];
-                        }
-                    }
-                    NSArray *pool = builtIn.count ? builtIn : thirdParty;
-                    if (pool.count == 1) {
-                        resolvedID = pool.firstObject;
-                    } else if (pool.count > 1) {
+                if (exact.count) {
+                    NSSet *types = [NSSet setWithArray:[exact valueForKey:@"type"]];
+                    if (types.count > 1) {
                         result = @{@"error": [NSString stringWithFormat:
-                            @"'%@' is not an exact effect name and matches %lu effects: %@. Use the exact name or effectID.",
-                            name, (unsigned long)names.count, [names componentsJoinedByString:@", "]],
-                            @"candidates": names};
+                            @"'%@' names more than one kind of item: %@. Pass the effectID of the one you want.",
+                            name, describe(exact)], @"candidates": exact};
                         return;
                     }
-                }
-
-                // Only use third-party if no built-in match was found in any phase
-                if (!resolvedID) resolvedID = thirdPartyFallback;
-                if (!resolvedID) {
-                    result = @{@"error": [NSString stringWithFormat:@"No effect found matching '%@'", name]};
+                    NSDictionary *pick = nil;
+                    for (NSDictionary *c in exact) if ([c[@"builtIn"] boolValue]) { pick = c; break; }
+                    resolvedID = (pick ?: exact.firstObject)[@"effectID"];
+                } else {
+                    // Fragment nazwy + pojedyncze słowa zapytania jako pełne nazwy („Gaussian Blur” → „Gaussian”, „Blur”)
+                    NSMutableSet *words = [NSMutableSet set];
+                    for (NSString *w in [lowerName componentsSeparatedByCharactersInSet:[NSCharacterSet whitespaceCharacterSet]])
+                        if (w.length >= 3 && ![w isEqualToString:lowerName]) [words addObject:w];
+                    NSMutableArray *near = collect(^BOOL(NSString *dn) {
+                        NSString *l = [dn lowercaseString];
+                        return [l containsString:lowerName] || [words containsObject:l];
+                    });
+                    if (near.count) {
+                        result = @{@"error": [NSString stringWithFormat:
+                            @"No effect is named exactly '%@'. Closest: %@. Use the exact name or effectID.",
+                            name, describe(near)], @"candidates": near};
+                    } else {
+                        result = @{@"error": [NSString stringWithFormat:@"No effect found matching '%@'", name]};
+                    }
                     return;
                 }
             }

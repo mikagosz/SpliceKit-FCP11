@@ -2960,8 +2960,10 @@ def apply_effect(name: str = "", effectID: str = "") -> str:
     Use list_effects() to see available effects.
 
     Args:
-        name: Display name of the effect (e.g. "Gaussian Blur", "Vignette")
-        effectID: The effect ID string
+        name: Exact display name of the effect (e.g. "Gaussian", "Vignette"). A name that
+              is only a fragment, or that several kinds of items share (e.g. "Blur" is both
+              a title and a filter), applies nothing and returns the candidates.
+        effectID: The effect ID string — use it to pick one of the candidates
 
     Supports undo via timeline_action("undo").
     """
