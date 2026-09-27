@@ -8324,7 +8324,11 @@ NSDictionary *SpliceKit_handleEffectsApply(NSDictionary *params) {
                 }
 
                 // Phase 3: Partial/substring match
-                if (!resolvedID) {
+                // mikagosz: tylko gdy kandydat jest JEDEN. Było: pierwszy z brzegu — „Gaussian Blur”
+                // nakładało „360° Gaussian Blur” (w 11.2 zwykły nazywa się „Gaussian”).
+                if (!resolvedID && !thirdPartyFallback) {
+                    NSMutableArray *builtIn = [NSMutableArray array], *thirdParty = [NSMutableArray array];
+                    NSMutableArray *names = [NSMutableArray array];
                     for (NSString *eid in allIDs) {
                         id type = ((id (*)(id, SEL, id))objc_msgSend)((id)ffEffect, typeSel, eid);
                         if ([type isKindOfClass:[NSString class]] &&
@@ -8333,13 +8337,19 @@ NSDictionary *SpliceKit_handleEffectsApply(NSDictionary *params) {
                         id dn = ((id (*)(id, SEL, id))objc_msgSend)((id)ffEffect, nameSel, eid);
                         if ([dn isKindOfClass:[NSString class]] &&
                             [[(NSString *)dn lowercaseString] containsString:lowerName]) {
-                            if (isBuiltIn(eid)) {
-                                resolvedID = eid;
-                                break;
-                            } else if (!thirdPartyFallback) {
-                                thirdPartyFallback = eid;
-                            }
+                            [(isBuiltIn(eid) ? builtIn : thirdParty) addObject:eid];
+                            [names addObject:dn];
                         }
+                    }
+                    NSArray *pool = builtIn.count ? builtIn : thirdParty;
+                    if (pool.count == 1) {
+                        resolvedID = pool.firstObject;
+                    } else if (pool.count > 1) {
+                        result = @{@"error": [NSString stringWithFormat:
+                            @"'%@' is not an exact effect name and matches %lu effects: %@. Use the exact name or effectID.",
+                            name, (unsigned long)names.count, [names componentsJoinedByString:@", "]],
+                            @"candidates": names};
+                        return;
                     }
                 }
 
@@ -14884,6 +14894,21 @@ static id SpliceKit_getSelectedClipEffectStack(id timeline, id *outClip) {
     return nil;
 }
 
+// mikagosz: stos efektów, który pokazuje INSPEKTOR FCP i który zapisuje eksport FCPXML
+// (adjust-transform, adjust-blend, adjust-volume) — videoEffects klipu na osi czasu
+// (FFAnchoredCollection). SpliceKit_getSelectedClipEffectStack schodzi do komponentu
+// w środku („IMG_1990 - v1”): zapis tam zmieniał obraz, ale inspektor i FCPXML go nie
+// widziały, a odczyt pokazywał 100% przy klipie powiększonym do 5000% (2026-09-27).
+static id SpliceKit_getInspectorEffectStack(id timeline, id *outClip) {
+    id item = timeline ? SpliceKit_getSelectedTimelineItem(timeline) : nil;
+    SEL veSel = NSSelectorFromString(@"videoEffects");
+    if (item && [item isKindOfClass:objc_getClass("FFAnchoredCollection")] && [item respondsToSelector:veSel]) {
+        id stack = ((id (*)(id, SEL))objc_msgSend)(item, veSel);
+        if (stack) { if (outClip) *outClip = item; return stack; }
+    }
+    return SpliceKit_getSelectedClipEffectStack(timeline, outClip);
+}
+
 static id SpliceKit_getClipAudioEffectStack(id clip) {
     if (!clip) return nil;
     @try {
@@ -15431,7 +15456,7 @@ static NSDictionary *SpliceKit_handleInspectorGet(NSDictionary *params) {
             if (!timeline) { result = @{@"error": @"No active timeline module"}; return; }
 
             id clip = nil;
-            id effectStack = SpliceKit_getSelectedClipEffectStack(timeline, &clip);
+            id effectStack = SpliceKit_getInspectorEffectStack(timeline, &clip);
             if (!clip) { result = @{@"error": @"No clips selected"}; return; }
 
             NSMutableDictionary *props = [NSMutableDictionary dictionary];
@@ -15498,8 +15523,9 @@ static NSDictionary *SpliceKit_handleInspectorGet(NSDictionary *params) {
                         id scaCh = nil;
                         @try { scaCh = ((id (*)(id, SEL))objc_msgSend)(xfEffect, NSSelectorFromString(@"scaleChannel3D")); } @catch(NSException *e) {}
                         if (scaCh) {
-                            xform[@"scaleX"] = @(SpliceKit_channelValue(SpliceKit_subChannel(scaCh, @"x")));
-                            xform[@"scaleY"] = @(SpliceKit_channelValue(SpliceKit_subChannel(scaCh, @"y")));
+                            // mikagosz: kanał trzyma 1 = 100%; zwracamy procenty jak w gałęzi bez transformacji
+                            xform[@"scaleX"] = @(SpliceKit_channelValue(SpliceKit_subChannel(scaCh, @"x")) * 100.0);
+                            xform[@"scaleY"] = @(SpliceKit_channelValue(SpliceKit_subChannel(scaCh, @"y")) * 100.0);
                         }
                         // Rotation
                         id rotCh = nil;
@@ -15626,7 +15652,7 @@ static NSDictionary *SpliceKit_handleInspectorSet(NSDictionary *params) {
             if (!timeline) { result = @{@"error": @"No active timeline module"}; return; }
 
             id clip = nil;
-            id effectStack = SpliceKit_getSelectedClipEffectStack(timeline, &clip);
+            id effectStack = SpliceKit_getInspectorEffectStack(timeline, &clip);
             if (!effectStack) { result = @{@"error": @"No clip selected or clip has no effect stack"}; return; }
 
             double val = [value doubleValue];
@@ -15683,7 +15709,9 @@ static NSDictionary *SpliceKit_handleInspectorSet(NSDictionary *params) {
                         if (channelMethod && axis) {
                             id ch3d = ((id (*)(id, SEL))objc_msgSend)(xfEffect, NSSelectorFromString(channelMethod));
                             id axisCh = SpliceKit_subChannel(ch3d, axis);
-                            success = SpliceKit_setChannelValue(axisCh, val);
+                            // mikagosz: skala w procentach (100 = 100%), kanał trzyma 1 = 100%
+                            double chVal = [channelMethod isEqualToString:@"scaleChannel3D"] ? val / 100.0 : val;
+                            success = SpliceKit_setChannelValue(axisCh, chVal);
                         }
                     }
                 } @catch (NSException *e) {}
@@ -15744,12 +15772,13 @@ static NSDictionary *SpliceKit_handleInspectorSet(NSDictionary *params) {
                 }
             }
 
-            // End undo action
+            // End undo action (mikagosz: save tylko przy sukcesie — nieudane „Set volume”/
+            // „Set nieznana” zostawiały puste kroki na stosie cofania)
             @try {
                 SEL endSel = NSSelectorFromString(@"actionEnd:save:error:");
                 if ([effectStack respondsToSelector:endSel]) {
                     ((void (*)(id, SEL, id, BOOL, id))objc_msgSend)(
-                        effectStack, endSel, desc, YES, nil);
+                        effectStack, endSel, desc, success, nil);
                 }
             } @catch (NSException *e) {}
 

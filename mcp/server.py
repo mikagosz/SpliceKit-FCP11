@@ -3376,15 +3376,17 @@ def set_inspector_property(property: str, value: float | str | bool) -> str:
                   "positionY" - vertical position in pixels (0 = center)
                   "positionZ" - Z depth
                   "rotation" - rotation in degrees
-                  "scaleX" - horizontal scale (100 = 100%)
-                  "scaleY" - vertical scale (100 = 100%)
+                  "scaleX" - horizontal scale in percent (100 = 100%, 50 = half)
+                  "scaleY" - vertical scale in percent (100 = 100%)
                   "anchorX" - anchor point X
                   "anchorY" - anchor point Y
                   "volume" - audio volume (linear gain, 1.0 = 0dB)
                   "handle:<handle_id>" - set any channel directly by handle
         value: New numeric value to set
 
-    Changes are undoable (Cmd+Z). Creates the transform effect if it doesn't exist yet.
+    Writes to the clip's own effect stack — the one FCP's inspector shows and FCPXML
+    exports (adjust-transform / adjust-blend). Changes are undoable (one undo each).
+    Creates the transform effect if it doesn't exist yet.
     Requires a clip to be selected first.
     """
     r = bridge.call("inspector.set", property=property, value=value)
