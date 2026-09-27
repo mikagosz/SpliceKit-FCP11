@@ -214,6 +214,22 @@ typedef struct { SpliceKit_CMTime start; SpliceKit_CMTime duration; } SpliceKit_
 
 static SpliceKit_CMTimeRange SpliceKit_clipRangeForItem(id item);
 static SpliceKit_CMTime SpliceKit_buildCMTime(double seconds, id timeline);
+// mikagosz: długość projektu w sekundach. W 11.2 FFAnchoredSequence nie odpowiada na -duration
+// (seek 99 s i krok klatki za końcem przechodziły, getPosition nie miał pola duration) —
+// bierzemy -duration z primaryObject (FFAnchoredCollection). 0 = nie wiadomo.
+static double SpliceKit_timelineDurationSeconds(id timeline) {
+    if (!timeline || ![timeline respondsToSelector:@selector(sequence)]) return 0;
+    id sequence = ((id (*)(id, SEL))objc_msgSend)(timeline, @selector(sequence));
+    if (!sequence) return 0;
+    id src = sequence;
+    if (![src respondsToSelector:@selector(duration)]) {
+        SEL poSel = NSSelectorFromString(@"primaryObject");
+        src = [sequence respondsToSelector:poSel] ? ((id (*)(id, SEL))objc_msgSend)(sequence, poSel) : nil;
+    }
+    if (!src || ![src respondsToSelector:@selector(duration)]) return 0;
+    SpliceKit_CMTime d = ((SpliceKit_CMTime (*)(id, SEL))STRET_MSG)(src, @selector(duration));
+    return d.timescale > 0 ? (double)d.value / d.timescale : 0;
+}
 static NSDictionary *SpliceKit_prepareBrowserClipSourceForInsertion(id sourceBrowserClip,
                                                                     SpliceKit_CMTimeRange clipRange,
                                                                     BOOL preferAudio);
@@ -4530,11 +4546,7 @@ NSDictionary *SpliceKit_handlePlayback(NSDictionary *params) {
                         fd = ((SpliceKit_CMTime (*)(id, SEL))STRET_MSG)(sequence, fdSel);
                     }
                     double frame = fd.timescale > 0 ? (double)fd.value / fd.timescale : 1.0 / 30;
-                    double dur = 0;
-                    if (sequence && [sequence respondsToSelector:@selector(duration)]) {
-                        SpliceKit_CMTime d = ((SpliceKit_CMTime (*)(id, SEL))STRET_MSG)(sequence, @selector(duration));
-                        dur = d.timescale > 0 ? (double)d.value / d.timescale : 0;
-                    }
+                    double dur = SpliceKit_timelineDurationSeconds(timeline);
                     double now = before.timescale > 0 ? (double)before.value / before.timescale : 0;
                     double target = now + [frameSteps[selector] intValue] * frame;
                     if (target < 0) target = 0;
@@ -4635,14 +4647,8 @@ NSDictionary *SpliceKit_handlePlaybackSeek(NSDictionary *params) {
             // mikagosz: 99 s na 12,8-sekundowym projekcie i -3 s przechodziły — głowica stała
             // poza projektem. Przycinamy do [0, długość] i mówimy o tym w wyniku.
             double requested = secs;
-            if ([timeline respondsToSelector:@selector(sequence)]) {
-                id seqForDur = ((id (*)(id, SEL))objc_msgSend)(timeline, @selector(sequence));
-                if (seqForDur && [seqForDur respondsToSelector:@selector(duration)]) {
-                    SpliceKit_CMTime d = ((SpliceKit_CMTime (*)(id, SEL))STRET_MSG)(seqForDur, @selector(duration));
-                    double dur = d.timescale > 0 ? (double)d.value / d.timescale : 0;
-                    if (dur > 0 && secs > dur) secs = dur;
-                }
-            }
+            double dur = SpliceKit_timelineDurationSeconds(timeline);
+            if (dur > 0 && secs > dur) secs = dur;
             if (secs < 0) secs = 0;
             SpliceKit_CMTime targetTime;
             targetTime.value = (int64_t)(secs * timescale);
@@ -4699,6 +4705,8 @@ NSDictionary *SpliceKit_handlePlaybackGetPosition(NSDictionary *params) {
                     if (sequence && [sequence respondsToSelector:@selector(duration)]) {
                         SpliceKit_CMTime dur = ((SpliceKit_CMTime (*)(id, SEL))STRET_MSG)(sequence, @selector(duration));
                         r[@"duration"] = SpliceKit_serializeCMTime(dur);
+                    } else {
+                        r[@"durationSeconds"] = @(SpliceKit_timelineDurationSeconds(timeline));
                     }
                     // Frame rate
                     SEL fdSel = NSSelectorFromString(@"frameDuration");
