@@ -19537,6 +19537,13 @@ static NSDictionary *SpliceKit_handleShareExport(NSDictionary *params) {
                       @"note": @"Export File dialog opened — use detect_dialog / click_dialog_button"};
             }
         });
+        // mikagosz: „Export File” jest modalne — blok stoi w oknie, r zostaje nil, a zapasowa
+        // droga dawała fałszywe „No responder handled” przy otwartym oknie (jak a57ca39).
+        if (!r && SpliceKit_lastMainThreadDispatchTimedOut()) {
+            return @{@"status": @"ok", @"action": @"shareToDefaultDestination:", @"modal": @YES,
+                     @"note": @"FCP's main thread stayed busy for 20 s — the Export File dialog is most likely open. "
+                              @"Use detect_dialog / click_dialog_button / dismiss_dialog."};
+        }
         return r ?: SpliceKit_sendAppAction(@"shareToDefaultDestination:");
     }
 }
