@@ -2705,7 +2705,7 @@ static NSDictionary *SpliceKit_handleTimelineActionImpl(NSDictionary *params) {
 
         // Export/Share
         @"exportXML":        @"exportXML:",
-        @"shareSelection":   @"shareSelection:",
+        @"shareSelection":   @"shareToDefaultDestination:",   // mikagosz: 11.2 File > Share > Export File (default)…; shareSelection: nic nie otwierał
 
         // Range selection (in/out points)
         // mikagosz: w 11.2 menu Mark > Set Range Start/End/Clear to setSelectionStart:/
@@ -19496,7 +19496,19 @@ static NSDictionary *SpliceKit_handleShareExport(NSDictionary *params) {
         return SpliceKit_handleMenuExecute(@{@"menuPath": @[@"File", @"Share", destination]});
     } else {
         // Use default share
-        return SpliceKit_sendAppAction(@"shareDefaultDestination:");
+        // mikagosz: shareDefaultDestination: nie ma w 11.2 żaden obiekt; menu File > Share >
+        // Export File (default)… to shareToDefaultDestination: na osi czasu (FFShareHelper).
+        __block NSDictionary *r = nil;
+        SpliceKit_executeOnMainThread(^{
+            id timeline = SpliceKit_getActiveTimelineModule();
+            SEL sel = NSSelectorFromString(@"shareToDefaultDestination:");
+            if (timeline && [timeline respondsToSelector:sel]) {
+                ((void (*)(id, SEL, id))objc_msgSend)(timeline, sel, nil);
+                r = @{@"action": @"shareToDefaultDestination:", @"status": @"ok",
+                      @"note": @"Export File dialog opened — use detect_dialog / click_dialog_button"};
+            }
+        });
+        return r ?: SpliceKit_sendAppAction(@"shareToDefaultDestination:");
     }
 }
 
