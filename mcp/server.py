@@ -2695,6 +2695,8 @@ def open_transcript(file_url: str = "", force_retranscribe: bool = False) -> str
     - Dragging words reorders clips on the timeline
 
     Transcription is async - use get_transcript() to check progress and results.
+    A saved transcript is restored only while it still matches the timeline; after an
+    undo or manual edit it is transcribed again (staleTranscriptReplaced in the result).
     """
     params = {}
     if file_url:
@@ -2862,7 +2864,9 @@ def delete_transcript_silences(min_duration: float = 0.0) -> str:
         min_duration: Minimum silence duration in seconds to delete. Default 0 = all silences.
                       Use 0.5 to only delete pauses longer than half a second, etc.
 
-    Use timeline_action("undo") repeatedly to reverse.
+    One undo step per up to 50 silences (undoSteps in the result).
+    Refuses to cut when the transcript no longer matches the timeline (e.g. after undo) —
+    re-open it with open_transcript(force_retranscribe=True) first.
     """
     r = bridge.call("transcript.deleteSilences", minDuration=min_duration)
     if _err(r):
@@ -6703,6 +6707,8 @@ def set_transcript_engine(engine: str) -> str:
 
     Args:
         engine: One of:
+            - "parakeet" (= "parakeetV3"): NVIDIA Parakeet v3, multilingual incl. Polish (default)
+            - "parakeetV2": Parakeet v2, English-optimized
             - "fcpNative": FCP's built-in AASpeechAnalyzer
             - "appleSpeech": Apple's SFSpeechRecognizer (slower, network-capable)
     """

@@ -1516,14 +1516,15 @@ static id SpliceKit_getUndoManager(void) {
 // mikagosz: kilka edycji z jednego wywołania (bladeAtTimes, addMarkers, scena) = JEDEN krok
 // cofania. Bez tego blade_at_times([3, 6.4, 9]) wymagało trzech undo — jedno undo zostawiało
 // dwa cięcia (zmierzone 2026-09-27). Wołać na głównym wątku, w tym samym bloku co edycje.
-static NSUndoManager *SpliceKit_beginUndoGroup(NSString *name) {
+// Bez static — używa też panel transkrypcji (SpliceKitTranscriptPanel.m).
+NSUndoManager *SpliceKit_beginUndoGroup(NSString *name) {
     NSUndoManager *um = (NSUndoManager *)SpliceKit_getUndoManager();
     if (!um) return nil;
     [um beginUndoGrouping];
     if (name) [um setActionName:name];
     return um;
 }
-static void SpliceKit_endUndoGroup(NSUndoManager *um) {
+void SpliceKit_endUndoGroup(NSUndoManager *um) {
     if (um && um.groupingLevel > 0) [um endUndoGrouping];
 }
 
@@ -7051,6 +7052,7 @@ static NSDictionary *SpliceKit_handleTranscriptOpen(NSDictionary *params) {
     __block BOOL startedTranscription = NO;
     __block BOOL restoredTranscript = NO;
     __block BOOL alreadyTranscribing = NO;
+    __block BOOL staleRetranscribe = NO;
 
     SpliceKit_executeOnMainThread(^{
         SpliceKitTranscriptPanel *panel = [SpliceKitTranscriptPanel sharedPanel];
@@ -7063,11 +7065,16 @@ static NSDictionary *SpliceKit_handleTranscriptOpen(NSDictionary *params) {
             double trimDuration = [params[@"trimDuration"] doubleValue] ?: HUGE_VAL;
             [panel transcribeFromURL:url timelineStart:timelineStart trimStart:trimStart trimDuration:trimDuration];
             startedTranscription = YES;
-        } else if (!forceRetranscribe && panel.status == SpliceKitTranscriptStatusReady && panel.words.count > 0) {
+        } else if (!forceRetranscribe && panel.status == SpliceKitTranscriptStatusReady && panel.words.count > 0
+                   && [panel transcriptMatchesTimeline]) {
             restoredTranscript = YES;
         } else if (!forceRetranscribe && panel.status == SpliceKitTranscriptStatusTranscribing) {
             alreadyTranscribing = YES;
         } else {
+            // mikagosz: zapamiętana transkrypcja z innego układu osi czasu (np. sprzed undo)
+            // nie jest przywracana — cięłaby w złe miejsca. Transkrybujemy od nowa.
+            staleRetranscribe = !forceRetranscribe && panel.status == SpliceKitTranscriptStatusReady
+                                && panel.words.count > 0;
             [panel transcribeTimeline];
             startedTranscription = YES;
         }
@@ -7076,8 +7083,11 @@ static NSDictionary *SpliceKit_handleTranscriptOpen(NSDictionary *params) {
     if (startedTranscription) {
         return @{
             @"status": @"ok",
-            @"message": @"Transcript panel opened. Transcription started. Use transcript.getState to check progress.",
+            @"message": staleRetranscribe
+                ? @"Transcript panel opened. The saved transcript no longer matched the timeline, so transcription started again. Use transcript.getState to check progress."
+                : @"Transcript panel opened. Transcription started. Use transcript.getState to check progress.",
             @"transcriptionStarted": @YES,
+            @"staleTranscriptReplaced": @(staleRetranscribe),
         };
     }
     if (alreadyTranscribing) {
@@ -7166,7 +7176,7 @@ static NSDictionary *SpliceKit_handleTranscriptSetSilenceThreshold(NSDictionary 
 
 static NSDictionary *SpliceKit_handleTranscriptSetEngine(NSDictionary *params) {
     NSString *engineName = params[@"engine"];
-    if (!engineName) return @{@"error": @"engine is required ('fcpNative', 'appleSpeech', 'parakeetV3', 'parakeetV2', 'whisperLargeV3Turbo', 'whisperLargeV3')"};
+    if (!engineName) return @{@"error": @"engine is required ('fcpNative', 'appleSpeech', 'parakeet' (= 'parakeetV3') or 'parakeetV2')"};
 
     SpliceKitTranscriptPanel *panel = [SpliceKitTranscriptPanel sharedPanel];
     if ([engineName isEqualToString:@"fcpNative"]) {
@@ -7180,7 +7190,8 @@ static NSDictionary *SpliceKit_handleTranscriptSetEngine(NSDictionary *params) {
         panel.engine = SpliceKitTranscriptEngineParakeet;
         panel.parakeetModelVersion = @"v2";
     } else {
-        return @{@"error": @"Unknown engine. Use 'fcpNative', 'appleSpeech', 'parakeetV3', 'parakeetV2', 'whisperLargeV3Turbo', or 'whisperLargeV3'"};
+        // mikagosz: bez whispera — kod go nie obsługuje, a komunikat go podsuwał
+        return @{@"error": @"Unknown engine. Use 'fcpNative', 'appleSpeech', 'parakeet' (= 'parakeetV3') or 'parakeetV2'"};
     }
     return @{@"status": @"ok", @"engine": engineName};
 }

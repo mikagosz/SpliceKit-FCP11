@@ -24,6 +24,10 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 
+// mikagosz: grupa cofania z SpliceKitServer.m — edycja z transkrypcji = jeden krok undo.
+extern NSUndoManager *SpliceKit_beginUndoGroup(NSString *name);
+extern void SpliceKit_endUndoGroup(NSUndoManager *um);
+
 // x86_64 ABI requires objc_msgSend_stret for struct returns > 16 bytes.
 // ARM64 returns all structs through objc_msgSend (no _stret variant exists).
 #if defined(__x86_64__)
@@ -477,6 +481,9 @@ static double CMTimeToSeconds(SpliceKitTranscript_CMTime t) {
 @property (nonatomic) double frameRate;
 @property (nonatomic) BOOL suppressPersistenceWrites;
 @property (nonatomic, copy) NSString *lastRestoredSequenceKey;
+// mikagosz: układ osi czasu (klipy: plik, początek, przycięcie, długość), do którego pasują
+// czasy słów. Inny układ = transkrypcja nieaktualna (np. po undo) — edycje odmawiają.
+@property (nonatomic, copy) NSString *layoutSignature;
 @end
 
 @implementation SpliceKitTranscriptPanel
@@ -885,6 +892,7 @@ static double CMTimeToSeconds(SpliceKitTranscript_CMTime t) {
         }
         [self.mutableSilences removeAllObjects];
         self.fullText = nil;
+        self.layoutSignature = nil;
         self.status = SpliceKitTranscriptStatusIdle;
         self.lastRestoredSequenceKey = nil;
         if (self.panel) {
@@ -955,6 +963,9 @@ static double CMTimeToSeconds(SpliceKitTranscript_CMTime t) {
     if (self.fullText.length > 0) {
         section[@"text"] = self.fullText;
     }
+    if (self.layoutSignature.length > 0) {
+        section[@"layoutSignature"] = self.layoutSignature;
+    }
     return section;
 }
 
@@ -1003,6 +1014,7 @@ static double CMTimeToSeconds(SpliceKitTranscript_CMTime t) {
         }
         [self.mutableSilences removeAllObjects];
         self.fullText = nil;
+        self.layoutSignature = nil;
         self.status = SpliceKitTranscriptStatusIdle;
         self.lastRestoredSequenceKey = sequenceKey;
         if (self.panel) {
@@ -1026,6 +1038,7 @@ static double CMTimeToSeconds(SpliceKitTranscript_CMTime t) {
         }
         [self.mutableSilences removeAllObjects];
         self.fullText = nil;
+        self.layoutSignature = nil;
         self.status = SpliceKitTranscriptStatusIdle;
         self.errorMessage = nil;
         self.lastRestoredSequenceKey = sequenceKey;
@@ -1085,6 +1098,8 @@ static double CMTimeToSeconds(SpliceKitTranscript_CMTime t) {
     if (transcript[@"silenceThreshold"]) self.silenceThreshold = [transcript[@"silenceThreshold"] doubleValue];
     self.speakerDetectionEnabled = [transcript[@"speakerDetectionEnabled"] boolValue];
     self.fullText = [transcript[@"text"] isKindOfClass:[NSString class]] ? transcript[@"text"] : nil;
+    // mikagosz: zapis sprzed tej poprawki nie ma podpisu → traktowany jako nieaktualny
+    self.layoutSignature = [transcript[@"layoutSignature"] isKindOfClass:[NSString class]] ? transcript[@"layoutSignature"] : nil;
     self.status = SpliceKitTranscriptStatusReady;
     self.errorMessage = nil;
     self.lastRestoredSequenceKey = sequenceKey;
@@ -1120,6 +1135,7 @@ static double CMTimeToSeconds(SpliceKitTranscript_CMTime t) {
     }
     [self.mutableSilences removeAllObjects];
     self.fullText = nil;
+    self.layoutSignature = nil;
     self.status = SpliceKitTranscriptStatusIdle;
     self.errorMessage = nil;
     self.lastRestoredSequenceKey = nil;
@@ -2254,6 +2270,7 @@ static double CMTimeToSeconds(SpliceKitTranscript_CMTime t) {
             [self detectSilences];
             [self assignSpeakers];
 
+            self.layoutSignature = [self currentLayoutSignature];
             self.status = SpliceKitTranscriptStatusReady;
             [self rebuildTextView];
             [self startPlayheadTimer];
@@ -2389,6 +2406,7 @@ static double CMTimeToSeconds(SpliceKitTranscript_CMTime t) {
             [self detectSilences];
             [self assignSpeakers];
 
+            self.layoutSignature = [self currentLayoutSignature];
             self.status = SpliceKitTranscriptStatusReady;
             [self rebuildTextView];
             [self startPlayheadTimer];
@@ -3193,6 +3211,7 @@ static double CMTimeToSeconds(SpliceKitTranscript_CMTime t) {
         [self detectSilences];
         [self assignSpeakers];
 
+        self.layoutSignature = [self currentLayoutSignature];
         self.status = SpliceKitTranscriptStatusReady;
         [self rebuildTextView];
         [self startPlayheadTimer];
@@ -3296,7 +3315,10 @@ static double CMTimeToSeconds(SpliceKitTranscript_CMTime t) {
                 // An interval > 2.5x median with duration >= threshold indicates a pause
                 // absorbed into contiguous timing
                 if (interval > medianInterval * 2.5 && interval - medianDuration >= self.silenceThreshold) {
-                    double silenceStart = current.startTime + medianDuration;
+                    // mikagosz: nie wcześniej niż faktyczny koniec słowa. Było: „góry” 5,52–5,92,
+                    // mediana 0,32 → pauza od 5,84, wchodziła w słowo i przez to (1,04 s)
+                    // przechodziła próg 1,0 s, choć przerwa ma 0,96 s.
+                    double silenceStart = MAX(current.endTime, current.startTime + medianDuration);
                     double silenceDuration = next.startTime - silenceStart;
                     if (silenceDuration >= self.silenceThreshold) {
                         SpliceKitTranscriptSilence *silence = [[SpliceKitTranscriptSilence alloc] init];
@@ -3847,6 +3869,7 @@ static double CMTimeToSeconds(SpliceKitTranscript_CMTime t) {
                     [self detectSilences];
                     [self assignSpeakers];
 
+                    self.layoutSignature = [self currentLayoutSignature];
                     self.status = SpliceKitTranscriptStatusReady;
                     [self rebuildTextView];
                     [self startPlayheadTimer];
@@ -4411,14 +4434,28 @@ static double CMTimeToSeconds(SpliceKitTranscript_CMTime t) {
 //
 
 /// Blade at start, blade at end, select the segment in between, ripple delete it.
+/// mikagosz: jeden krok cofania (było: Delete, Blade, Blade = trzy undo).
 - (NSDictionary *)deleteTimelineRange:(double)deleteStart end:(double)deleteEnd {
     __block NSDictionary *result = nil;
     SpliceKit_executeOnMainThread(^{
+        NSUndoManager *undoGroup = SpliceKit_beginUndoGroup(@"Delete Words");
+        @try {
+            result = [self deleteTimelineRangeOnMainThread:deleteStart end:deleteEnd];
+        } @finally {
+            SpliceKit_endUndoGroup(undoGroup);
+        }
+    });
+    return result;
+}
+
+/// Wołać na głównym wątku (w bloku z grupą cofania).
+- (NSDictionary *)deleteTimelineRangeOnMainThread:(double)deleteStart end:(double)deleteEnd {
+    NSDictionary *result = nil;
+    {
         @try {
             id timeline = [self getActiveTimelineModule];
             if (!timeline) {
-                result = @{@"error": @"No active timeline"};
-                return;
+                return @{@"error": @"No active timeline"};
             }
 
             // Blade at start
@@ -4464,7 +4501,7 @@ static double CMTimeToSeconds(SpliceKitTranscript_CMTime t) {
         } @catch (NSException *e) {
             result = @{@"error": [NSString stringWithFormat:@"Exception: %@", e.reason]};
         }
-    });
+    }
     return result;
 }
 
@@ -4473,6 +4510,7 @@ static double CMTimeToSeconds(SpliceKitTranscript_CMTime t) {
 /// resync timestamps from FCP's actual clip positions (since blade changes durations).
 - (NSDictionary *)deleteWordsFromIndex:(NSUInteger)startIndex count:(NSUInteger)count {
     [self ensurePersistedStateLoaded];
+    if (![self transcriptMatchesTimeline]) return [self staleTranscriptError];
 
     @synchronized (self.mutableWords) {
         if (startIndex >= self.mutableWords.count) {
@@ -4532,6 +4570,7 @@ static double CMTimeToSeconds(SpliceKitTranscript_CMTime t) {
 
 - (NSDictionary *)deleteSilencesLongerThan:(double)minDuration {
     [self ensurePersistedStateLoaded];
+    if (![self transcriptMatchesTimeline]) return [self staleTranscriptError];
 
     // Collect silences to delete (filter by minimum duration)
     NSMutableArray<SpliceKitTranscriptSilence *> *toDelete = [NSMutableArray array];
@@ -4567,26 +4606,37 @@ static double CMTimeToSeconds(SpliceKitTranscript_CMTime t) {
     // Use the safe blade+select+delete approach via the responder chain.
     // Sleeps are reduced from 50ms to 20ms since these are direct ObjC calls
     // that execute synchronously — the sleep is just for FCP's internal state to settle.
-    for (SpliceKitTranscriptSilence *silence in toDelete) {
-        // Adjust times for already-removed content
-        double adjStart = silence.startTime - totalTimeRemoved;
-        double adjEnd = silence.endTime - totalTimeRemoved;
-
-        NSDictionary *result = [self deleteTimelineRange:adjStart end:adjEnd];
-        if (result[@"error"]) {
-            lastError = result[@"error"];
-            SpliceKit_log(@"[Transcript] Error deleting silence at %.2fs: %@", adjStart, lastError);
-        } else {
-            deletedCount++;
-            totalTimeRemoved += silence.duration;
-        }
-
-        if (deletedCount % 5 == 0) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                [self updateStatusUI:[NSString stringWithFormat:@"Deleting pauses... %lu/%lu",
-                    (unsigned long)deletedCount, (unsigned long)toDelete.count]];
-            });
-        }
+    // mikagosz: tniemy od końca, więc wcześniejsze pauzy stoją w miejscu — BEZ odejmowania
+    // już wyciętego czasu. Było: podwójna kompensacja, pierwsza pauza z trzech (5,92 s)
+    // wycięła 3,60–4,53 s mowy (zmierzone 2026-09-27). Paczka do 50 pauz = jeden blok na
+    // głównym wątku i jeden krok cofania (~0,1 s na pauzę — mieści się w limicie 20 s).
+    const NSUInteger kSilencesPerUndoStep = 50;
+    __block NSUInteger undoSteps = 0;
+    for (NSUInteger chunkStart = 0; chunkStart < toDelete.count; chunkStart += kSilencesPerUndoStep) {
+        NSArray *chunk = [toDelete subarrayWithRange:NSMakeRange(chunkStart,
+            MIN(kSilencesPerUndoStep, toDelete.count - chunkStart))];
+        SpliceKit_executeOnMainThread(^{
+            NSUndoManager *undoGroup = SpliceKit_beginUndoGroup(@"Delete Silences");
+            @try {
+                for (SpliceKitTranscriptSilence *silence in chunk) {
+                    NSDictionary *result = [self deleteTimelineRangeOnMainThread:silence.startTime end:silence.endTime];
+                    if (result[@"error"]) {
+                        lastError = result[@"error"];
+                        SpliceKit_log(@"[Transcript] Error deleting silence at %.2fs: %@", silence.startTime, lastError);
+                    } else {
+                        deletedCount++;
+                        totalTimeRemoved += silence.duration;
+                    }
+                }
+            } @finally {
+                SpliceKit_endUndoGroup(undoGroup);
+            }
+            undoSteps++;
+        });
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self updateStatusUI:[NSString stringWithFormat:@"Deleting pauses... %lu/%lu",
+                (unsigned long)deletedCount, (unsigned long)toDelete.count]];
+        });
     }
 
     // Re-read the actual clip layout after the ripple deletes instead of trying
@@ -4608,6 +4658,7 @@ static double CMTimeToSeconds(SpliceKitTranscript_CMTime t) {
     response[@"deletedCount"] = @(deletedCount);
     response[@"totalSilences"] = @(toDelete.count);
     response[@"timeRemoved"] = @(totalTimeRemoved);
+    response[@"undoSteps"] = @(undoSteps);
     if (lastError) response[@"lastError"] = lastError;
 
     return response;
@@ -4621,6 +4672,7 @@ static double CMTimeToSeconds(SpliceKitTranscript_CMTime t) {
 /// the source shifts everything after it earlier by the source duration).
 - (NSDictionary *)moveWordsFromIndex:(NSUInteger)startIndex count:(NSUInteger)count toIndex:(NSUInteger)destIndex {
     [self ensurePersistedStateLoaded];
+    if (![self transcriptMatchesTimeline]) return [self staleTranscriptError];
 
     @synchronized (self.mutableWords) {
         if (startIndex >= self.mutableWords.count || destIndex > self.mutableWords.count) {
@@ -4656,6 +4708,8 @@ static double CMTimeToSeconds(SpliceKitTranscript_CMTime t) {
 
     __block NSDictionary *result = nil;
     SpliceKit_executeOnMainThread(^{
+        // mikagosz: jeden krok cofania (było: Paste, Cut, Blade, Blade = cztery undo)
+        NSUndoManager *undoGroup = SpliceKit_beginUndoGroup(@"Move Words");
         @try {
             id timeline = [self getActiveTimelineModule];
             if (!timeline) {
@@ -4709,6 +4763,8 @@ static double CMTimeToSeconds(SpliceKitTranscript_CMTime t) {
 
         } @catch (NSException *e) {
             result = @{@"error": [NSString stringWithFormat:@"Exception: %@", e.reason]};
+        } @finally {
+            SpliceKit_endUndoGroup(undoGroup);
         }
     });
 
@@ -4772,6 +4828,52 @@ static double CMTimeToSeconds(SpliceKitTranscript_CMTime t) {
 // trying to track cumulative shifts manually is fragile with compound edits.
 //
 
+// mikagosz: podpis układu osi czasu — klipy z ich plikiem, początkiem na osi, przycięciem
+// i długością (w 1/600 s). Czasy słów pasują tylko do układu, na którym je policzono; po undo
+// albo ręcznej edycji układ jest inny, a transkrypcja by cięła w złe miejsca.
+- (NSString *)layoutSignatureForClipInfos:(NSArray *)clipInfos {
+    NSMutableArray *parts = [NSMutableArray array];
+    for (NSDictionary *info in clipInfos) {
+        NSURL *url = info[@"mediaURL"];
+        [parts addObject:[NSString stringWithFormat:@"%@|%lld|%lld|%lld",
+            url.path ?: @"-",
+            (long long)llround([info[@"timelineStart"] doubleValue] * 600.0),
+            (long long)llround([info[@"trimStart"] doubleValue] * 600.0),
+            (long long)llround([info[@"duration"] doubleValue] * 600.0)]];
+    }
+    return [parts componentsJoinedByString:@";"];
+}
+
+- (NSString *)currentLayoutSignature {
+    __block NSArray *clipInfos = nil;
+    SpliceKit_executeOnMainThread(^{
+        @try {
+            id timeline = [self getActiveTimelineModule];
+            id sequence = [timeline respondsToSelector:@selector(sequence)]
+                ? ((id (*)(id, SEL))objc_msgSend)(timeline, @selector(sequence)) : nil;
+            id primaryObj = [sequence respondsToSelector:@selector(primaryObject)]
+                ? ((id (*)(id, SEL))objc_msgSend)(sequence, @selector(primaryObject)) : nil;
+            if (sequence && primaryObj)
+                clipInfos = [self collectClipInfosForSequence:sequence primaryObject:primaryObj errorMessage:nil];
+        } @catch (NSException *e) {
+            SpliceKit_log(@"[Transcript] Layout signature error: %@", e.reason);
+        }
+    });
+    return clipInfos ? [self layoutSignatureForClipInfos:clipInfos] : nil;
+}
+
+- (BOOL)transcriptMatchesTimeline {
+    if (self.layoutSignature.length == 0) return NO;
+    return [self.layoutSignature isEqualToString:[self currentLayoutSignature] ?: @""];
+}
+
+- (NSDictionary *)staleTranscriptError {
+    return @{@"error": @"The transcript no longer matches the timeline (the timeline changed after it was made — "
+                       @"e.g. undo or a manual edit), so its times would cut in the wrong places. "
+                       @"Re-open it with force_retranscribe=True first.",
+             @"stale": @YES};
+}
+
 - (void)resyncTimestampsFromTimeline {
     // Each word has an immutable sourceMediaTime (its position in the source file).
     // We match each word to the clip that contains its source time, then compute:
@@ -4804,6 +4906,7 @@ static double CMTimeToSeconds(SpliceKitTranscript_CMTime t) {
         SpliceKit_log(@"[Transcript] Resync: no clips found");
         return;
     }
+    self.layoutSignature = [self layoutSignatureForClipInfos:clipInfos];
 
     // Build actual clip segments with media paths for matching
     NSMutableArray *actualClips = [NSMutableArray array];
@@ -5041,14 +5144,24 @@ static double CMTimeToSeconds(SpliceKitTranscript_CMTime t) {
     if (!timeline) return;
 
     int32_t timescale = 600;
+    int64_t frameValue = 0;
     if ([timeline respondsToSelector:@selector(sequenceFrameDuration)]) {
         SpliceKitTranscript_CMTime fd = ((SpliceKitTranscript_CMTime (*)(id, SEL))STRET_MSG)(
             timeline, @selector(sequenceFrameDuration));
-        if (fd.timescale > 0) timescale = fd.timescale;
+        if (fd.timescale > 0) { timescale = fd.timescale; frameValue = fd.value; }
+    }
+
+    // mikagosz: pełna klatka z tolerancją. Było (int64_t)(s * timescale): 10,3999996 s
+    // → 6239 → FCP tnął na klatce 311 zamiast 312 i gubił koniec słowa. Nadal w dół
+    // (jak dotąd), ale 1/1000 klatki poniżej granicy liczy się jako ta granica.
+    int64_t value = (int64_t)(seconds * timescale);
+    if (frameValue > 0) {
+        double frames = seconds * timescale / (double)frameValue;
+        value = (int64_t)floor(frames + 1e-3) * frameValue;
     }
 
     SpliceKitTranscript_CMTime cmTime = {
-        .value = (int64_t)(seconds * timescale),
+        .value = value,
         .timescale = timescale,
         .flags = 1,
         .epoch = 0
@@ -5088,6 +5201,9 @@ static double CMTimeToSeconds(SpliceKitTranscript_CMTime t) {
 
     state[@"visible"] = @(self.isVisible);
     state[@"wordCount"] = @(self.mutableWords.count);
+    if (self.status == SpliceKitTranscriptStatusReady && self.mutableWords.count > 0) {
+        state[@"matchesTimeline"] = @([self transcriptMatchesTimeline]);
+    }
     state[@"silenceCount"] = @(self.mutableSilences.count);
     state[@"silenceThreshold"] = @(self.silenceThreshold);
     state[@"frameRate"] = @(self.frameRate);

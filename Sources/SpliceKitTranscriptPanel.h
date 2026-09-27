@@ -92,6 +92,8 @@ typedef NS_ENUM(NSInteger, SpliceKitTranscriptEngine) {
 - (void)redetectSilencesAndRefreshUI;            // detectSilences + rebuild text view
 - (NSDictionary *)deleteAllSilences;
 - (NSDictionary *)deleteSilencesLongerThan:(double)minDuration;
+// mikagosz: czy czasy słów pasują do obecnego układu osi czasu (NO po undo / ręcznej edycji)
+- (BOOL)transcriptMatchesTimeline;
 
 // Speaker assignment
 - (void)setSpeaker:(NSString *)speaker forWordsFrom:(NSUInteger)startIndex count:(NSUInteger)count;
