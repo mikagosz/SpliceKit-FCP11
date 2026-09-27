@@ -33,6 +33,7 @@
 #import <AVFoundation/AVFoundation.h>
 #import <Accelerate/Accelerate.h>
 #import <Security/Security.h>
+#import <sys/sysctl.h>
 #include <dlfcn.h>
 #include <mach-o/dyld.h>
 #include <mach-o/getsect.h>
@@ -658,9 +659,16 @@ static NSDictionary *SpliceKit_handleSystemVersion(NSDictionary *params) {
         @"swizzles": SpliceKit_getSwizzleResults(),
     } mutableCopy];
 
-    // Add uptime
-    NSTimeInterval uptime = [[NSProcessInfo processInfo] systemUptime];
-    result[@"process_uptime_seconds"] = @((int)uptime);
+    // Add uptime (mikagosz: systemUptime to czas od startu Maca, nie FCP — liczymy od startu procesu)
+    struct kinfo_proc kp;
+    size_t kpLen = sizeof(kp);
+    int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PID, getpid()};
+    if (sysctl(mib, 4, &kp, &kpLen, NULL, 0) == 0 && kpLen > 0) {
+        struct timeval start = kp.kp_proc.p_starttime;
+        NSTimeInterval started = start.tv_sec + start.tv_usec / 1e6;
+        result[@"process_uptime_seconds"] = @((int)([[NSDate date] timeIntervalSince1970] - started));
+    }
+    result[@"system_uptime_seconds"] = @((int)[[NSProcessInfo processInfo] systemUptime]);
 
     // Add signing info
     SecStaticCodeRef staticCode = NULL;
@@ -671,8 +679,16 @@ static NSDictionary *SpliceKit_handleSystemVersion(NSDictionary *params) {
         OSStatus infoErr = SecCodeCopySigningInformation(
             (SecCodeRef)staticCode, kSecCSSigningInformation, &signingInfo);
         if (infoErr == errSecSuccess && signingInfo) {
-            NSString *teamID = ((__bridge NSDictionary *)signingInfo)[@"teamid"];
-            result[@"signing_team"] = teamID ?: @"ad-hoc";
+            NSDictionary *si = (__bridge NSDictionary *)signingInfo;
+            NSString *teamID = si[(__bridge NSString *)kSecCodeInfoTeamIdentifier];
+            // mikagosz: brak Team ID nie znaczy „ad-hoc” — podpis lokalnym certyfikatem też go nie ma
+            BOOL adhoc = ([si[(__bridge NSString *)kSecCodeInfoFlags] unsignedIntValue] & kSecCodeSignatureAdhoc) != 0;
+            result[@"signing_team"] = teamID ?: (adhoc ? @"ad-hoc" : @"none");
+            NSArray *certs = si[(__bridge NSString *)kSecCodeInfoCertificates];
+            if (certs.count > 0) {
+                CFStringRef cn = SecCertificateCopySubjectSummary((__bridge SecCertificateRef)certs.firstObject);
+                if (cn) result[@"signing_authority"] = (__bridge_transfer NSString *)cn;
+            }
             CFRelease(signingInfo);
         }
         CFRelease(staticCode);
