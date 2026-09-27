@@ -3469,8 +3469,9 @@ def select_tool(tool: str) -> str:
     """Switch to a specific editing tool.
 
     Args:
-        tool: "select", "trim", "blade", "position", "hand", "zoom",
-              "range", "crop", "distort", "transform"
+        tool: "select", "trim", "blade", "position", "hand", "zoom", "range"
+              (crop/distort/transform are viewer on-screen controls in FCP 11.2,
+              not timeline tools — the bridge has no selector for them)
     """
     r = bridge.call("tool.select", tool=tool)
     if _err(r):

@@ -20518,7 +20518,19 @@ static NSDictionary *SpliceKit_handleToolSelect(NSDictionary *params) {
                     tool, [[toolMap allKeys] componentsJoinedByString:@", "]]};
     }
 
-    return SpliceKit_sendAppAction(selector);
+    // mikagosz: prosto do modułu osi czasu. Łańcuchem przy FCP w tle zwracało „ok”,
+    // a isArrowToolActive zostawało YES dla każdego narzędzia (zmierzone 2026-09-27).
+    __block NSDictionary *result = nil;
+    SpliceKit_executeOnMainThread(^{
+        id timeline = SpliceKit_getActiveTimelineModule();
+        SEL sel = NSSelectorFromString(selector);
+        if (!timeline || ![timeline respondsToSelector:sel]) return;
+        ((void (*)(id, SEL, id))objc_msgSend)(timeline, sel, nil);
+        SEL arrowSel = NSSelectorFromString(@"isArrowToolActive");
+        BOOL arrow = [timeline respondsToSelector:arrowSel] && ((BOOL (*)(id, SEL))objc_msgSend)(timeline, arrowSel);
+        result = @{@"action": selector, @"status": @"ok", @"arrowToolActive": @(arrow)};
+    });
+    return result ?: SpliceKit_sendAppAction(selector);
 }
 
 #pragma mark - Spring-Loaded Blade Tool
