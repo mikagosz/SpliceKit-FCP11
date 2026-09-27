@@ -4664,10 +4664,23 @@ NSDictionary *SpliceKit_handlePlayback(NSDictionary *params) {
         }
     });
     if (!moved) {
+        // mikagosz: powód zamiast zgadywania — koniec projektu, FCP w tle albo coś innego
+        __block BOOL active = NO, atEnd = NO;
+        SpliceKit_executeOnMainThread(^{
+            active = [NSApp isActive];
+            id timeline = SpliceKit_getActiveTimelineModule();
+            double dur = SpliceKit_timelineDurationSeconds(timeline);
+            atEnd = dur > 0 && t0 >= dur - 0.05;
+        });
+        NSString *why = atEnd
+            ? @"The playhead is at the end of the project — nothing to play. Seek back first."
+            : (!active
+               ? @"FCP is in the background — it has no key window, so playback commands go nowhere. "
+                 @"seek_to_time and goToStart/goToEnd/nextFrame/prevFrame work without it."
+               : @"FCP is frontmost, so the reason is something else (nothing to play in this state?).");
         return @{@"error": [NSString stringWithFormat:
-            @"%@ was accepted but playback did not start (playhead did not move in 0.35 s). "
-            @"Usually FCP is in the background — it has no key window, so playback commands go nowhere. "
-            @"seek_to_time and goToStart/goToEnd/nextFrame/prevFrame work without it.", selector]};
+            @"%@ was accepted but playback did not start (playhead did not move in 0.35 s). %@", selector, why],
+            @"atEnd": @(atEnd), @"fcpActive": @(active)};
     }
     return sent;
 }
