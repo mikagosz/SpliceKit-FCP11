@@ -13431,11 +13431,27 @@ static NSDictionary *SpliceKit_handleBrowserListClips(NSDictionary *params) {
 
                 if (![clips isKindOfClass:[NSArray class]]) continue;
 
+                // mikagosz: projekty i klipy to w 11.2 ta sama klasa (FFAnchoredSequence) —
+                // odróżniamy je po liście projects wydarzenia (FFSequenceRecord → sequence).
+                NSMutableSet *projectSeqs = [NSMutableSet set];
+                SEL projectsSel = NSSelectorFromString(@"projects");
+                if ([event respondsToSelector:projectsSel]) {
+                    id records = ((id (*)(id, SEL))objc_msgSend)(event, projectsSel);
+                    if ([records isKindOfClass:[NSArray class]]) {
+                        for (id rec in (NSArray *)records) {
+                            if (![rec respondsToSelector:NSSelectorFromString(@"sequence")]) continue;
+                            id s = ((id (*)(id, SEL))objc_msgSend)(rec, NSSelectorFromString(@"sequence"));
+                            if (s) [projectSeqs addObject:[NSValue valueWithNonretainedObject:s]];
+                        }
+                    }
+                }
+
                 for (id clip in (NSArray *)clips) {
                     NSMutableDictionary *info = [NSMutableDictionary dictionary];
                     info[@"index"] = @(clipIndex++);
                     info[@"event"] = eventName;
                     info[@"class"] = NSStringFromClass([clip class]);
+                    info[@"isProject"] = @([projectSeqs containsObject:[NSValue valueWithNonretainedObject:clip]]);
 
                     if ([clip respondsToSelector:@selector(displayName)]) {
                         id name = ((id (*)(id, SEL))objc_msgSend)(clip, @selector(displayName));
@@ -14129,6 +14145,9 @@ static id SpliceKit_resolveMediaImportEvent(NSString *libraryName, NSString *eve
                 NSString *ename = nil;
                 if ([eventRecord respondsToSelector:@selector(name)]) {
                     ename = ((id (*)(id, SEL))objc_msgSend)(eventRecord, @selector(name));
+                } else if ([eventRecord respondsToSelector:@selector(displayName)]) {
+                    // mikagosz: FFEventRecord w FCP 11.2 nie ma -name, tylko -displayName
+                    ename = ((id (*)(id, SEL))objc_msgSend)(eventRecord, @selector(displayName));
                 }
                 if (!ename || ![[ename lowercaseString] containsString:evtLower]) continue;
             }
@@ -19202,36 +19221,55 @@ NSDictionary *SpliceKit_handleProjectOpen(NSDictionary *params) {
                     libName = ((id (*)(id, SEL))objc_msgSend)(lib, @selector(displayName)) ?: @"";
                 }
 
-                // Get deep loaded sequences
-                SEL deepSeqSel = NSSelectorFromString(@"_deepLoadedSequences");
-                if (![lib respondsToSelector:deepSeqSel]) continue;
-
-                id seqSet = ((id (*)(id, SEL))objc_msgSend)(lib, deepSeqSel);
-                if (!seqSet) continue;
-
-                id seqArray = nil;
-                if ([seqSet respondsToSelector:@selector(allObjects)]) {
-                    seqArray = ((id (*)(id, SEL))objc_msgSend)(seqSet, @selector(allObjects));
-                } else if ([seqSet isKindOfClass:[NSArray class]]) {
-                    seqArray = seqSet;
+                // mikagosz: w FCP 11.2 sekwencja nie zna swojego wydarzenia (-event nie istnieje),
+                // a _deepLoadedSequences miesza projekty z klipami przeglądarki. Idziemy
+                // biblioteka → wydarzenia → projects (FFSequenceRecord) → sequence: same projekty,
+                // każdy z nazwą swojego wydarzenia. Stara droga zostaje jako zapas.
+                NSMutableArray *seqArray = [NSMutableArray array];
+                NSMutableArray *seqEvents = [NSMutableArray array];
+                SEL eventsSel = NSSelectorFromString(@"events");
+                SEL projectsSel = NSSelectorFromString(@"projects");
+                SEL recordSeqSel = NSSelectorFromString(@"sequence");
+                id events = [lib respondsToSelector:eventsSel]
+                    ? ((id (*)(id, SEL))objc_msgSend)(lib, eventsSel) : nil;
+                if ([events isKindOfClass:[NSArray class]]) {
+                    for (id ev in (NSArray *)events) {
+                        NSString *evName = [ev respondsToSelector:@selector(displayName)]
+                            ? (((id (*)(id, SEL))objc_msgSend)(ev, @selector(displayName)) ?: @"") : @"";
+                        if (![ev respondsToSelector:projectsSel]) continue;
+                        id records = ((id (*)(id, SEL))objc_msgSend)(ev, projectsSel);
+                        if (![records isKindOfClass:[NSArray class]]) continue;
+                        for (id rec in (NSArray *)records) {
+                            if (![rec respondsToSelector:recordSeqSel]) continue;
+                            id s = ((id (*)(id, SEL))objc_msgSend)(rec, recordSeqSel);
+                            if (!s) continue;
+                            [seqArray addObject:s];
+                            [seqEvents addObject:evName];
+                        }
+                    }
                 }
-                if (!seqArray || ![seqArray isKindOfClass:[NSArray class]]) continue;
+                if (seqArray.count == 0) {
+                    SEL deepSeqSel = NSSelectorFromString(@"_deepLoadedSequences");
+                    if (![lib respondsToSelector:deepSeqSel]) continue;
+                    id seqSet = ((id (*)(id, SEL))objc_msgSend)(lib, deepSeqSel);
+                    if ([seqSet respondsToSelector:@selector(allObjects)]) {
+                        seqSet = ((id (*)(id, SEL))objc_msgSend)(seqSet, @selector(allObjects));
+                    }
+                    if (![seqSet isKindOfClass:[NSArray class]]) continue;
+                    for (id s in (NSArray *)seqSet) {
+                        [seqArray addObject:s];
+                        [seqEvents addObject:@""];
+                    }
+                }
 
-                for (id seq in (NSArray *)seqArray) {
+                for (NSUInteger si = 0; si < seqArray.count; si++) {
+                    id seq = seqArray[si];
                     NSString *seqName = @"";
                     if ([seq respondsToSelector:@selector(displayName)]) {
                         seqName = ((id (*)(id, SEL))objc_msgSend)(seq, @selector(displayName)) ?: @"";
                     }
 
-                    // Get event name for this sequence
-                    NSString *seqEvent = @"";
-                    SEL eventSel = NSSelectorFromString(@"event");
-                    if ([seq respondsToSelector:eventSel]) {
-                        id event = ((id (*)(id, SEL))objc_msgSend)(seq, eventSel);
-                        if (event && [event respondsToSelector:@selector(displayName)]) {
-                            seqEvent = ((id (*)(id, SEL))objc_msgSend)(event, @selector(displayName)) ?: @"";
-                        }
-                    }
+                    NSString *seqEvent = seqEvents[si];
 
                     // Check if sequence has content
                     BOOL hasContent = NO;

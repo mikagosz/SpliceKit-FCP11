@@ -2469,6 +2469,14 @@ def get_active_libraries() -> str:
                     selector="copyActiveLibraries", args=[], classMethod=True, returnHandle=True)
     if _err(r):
         return f"Error: {r.get('error', r)}"
+    # mikagosz: sam uchwyt i "<FFLibrary: 0x…>" nic nie mówią — dokładamy nazwy i ścieżki
+    handle = r.get("handle")
+    if handle:
+        for key, label in (("displayName", "names"), ("URL.path", "paths")):
+            v = bridge.call("system.callMethodWithArgs", target=handle, selector="valueForKeyPath:",
+                            args=[{"type": "string", "value": key}], returnHandle=False)
+            if not _err(v):
+                r[label] = v.get("result")
     return _fmt(r)
 
 
