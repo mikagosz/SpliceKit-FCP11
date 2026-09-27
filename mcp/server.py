@@ -1113,7 +1113,8 @@ def detect_scene_changes(threshold: float = 0.35, action: str = "detect", sample
     """Use this read-only tool to inspect scene changes before deciding whether to mark or blade them.
 
     Args:
-        threshold: Sensitivity (0.0-1.0). Lower = more sensitive. Default 0.35.
+        threshold: Histogram difference between sampled frames, 0.0–2.0 (2.0 = nothing in common).
+                   Lower = more sensitive. Default 0.35 also fires on fast camera moves in one shot.
         action: Deprecated compatibility argument. Only "detect" is accepted here.
         sample_interval: Seconds between sampled frames. Default 0.1.
 
@@ -1133,7 +1134,11 @@ def detect_scene_changes(threshold: float = 0.35, action: str = "detect", sample
         lines.append(f"Action: {r.get('action')} applied at each scene change")
     lines.append("")
     for sc in changes:
-        lines.append(f"  {sc['time']:.2f}s  (score: {sc.get('score', 0):.3f})")
+        # mikagosz: czas na osi czasu; w nawiasie klip i czas w jego pliku (od poprawki mostu)
+        where = f"  [{sc['clip']} @ {sc['sourceTime']:.2f}s w pliku]" if "clip" in sc else ""
+        lines.append(f"  {sc['time']:.2f}s  (score: {sc.get('score', 0):.3f}){where}")
+    for sk in r.get("skipped", []):
+        lines.append(f"  POMINIĘTY: {sk.get('clip', '?')} — {sk.get('reason', '')}")
     return "\n".join(lines)
 
 
@@ -4056,14 +4061,43 @@ def capture_viewer(path: str = "/tmp/splicekit_viewer.png") -> str:
 
     Returns the file path, image dimensions, and file size.
     The saved PNG can be read by Claude to visually verify viewer output.
+    Right after a seek the viewer still shows the previous frame; the tool
+    waits (up to ~2 s) until two captures in a row are identical.
     """
     r = bridge.call("viewer.capture", path=path)
     if _err(r):
         return f"Error: {r.get('error', r)}"
 
+    # mikagosz: zrzut tuż po seek_to_time był bajt w bajt poprzednią klatką (sprawdzone
+    # 2026-09-27). Powtarzamy, aż dwa kolejne zrzuty będą identyczne — chyba że gra.
+    settle_note = ""
+    if r.get("status") == "ok":
+        pos = bridge.call("playback.getPosition")
+        if not _err(pos) and not pos.get("isPlaying"):
+            try:
+                with open(path, "rb") as f:
+                    prev = f.read()
+                for attempt in range(13):
+                    time.sleep(0.15)
+                    r2 = bridge.call("viewer.capture", path=path)
+                    if _err(r2) or r2.get("status") != "ok":
+                        break
+                    r = r2
+                    with open(path, "rb") as f:
+                        cur = f.read()
+                    if cur == prev:
+                        settle_note = f"\nStable after {attempt + 1} re-capture(s)"
+                        break
+                    prev = cur
+                else:
+                    settle_note = "\nWARNING: viewer did not settle in ~2 s — frame may be stale"
+            except OSError:
+                pass
+
     if r.get("status") == "ok":
         return (f"Viewer captured: {r.get('path')}\n"
-                f"Size: {r.get('width')}x{r.get('height')} ({r.get('bytes', 0)} bytes)")
+                f"Size: {r.get('width')}x{r.get('height')} ({r.get('bytes', 0)} bytes)"
+                f"{settle_note}")
     return _fmt(r)
 
 

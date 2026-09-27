@@ -7438,188 +7438,218 @@ NSDictionary *SpliceKit_handleDetectSceneChanges(NSDictionary *params) {
     double sampleInterval = [params[@"sampleInterval"] doubleValue] ?: 0.1; // check every 0.1s
     NSString *action = params[@"action"] ?: @"detect"; // "detect", "markers", "blade"
 
-    // Get media URL from timeline's first clip, or use provided URL
-    __block NSURL *mediaURL = nil;
+    // mikagosz: upstream brał tylko najdłuższy klip i podawał czasy W PLIKU, a mark/blade
+    // używały ich jako czasów osi czasu — złe miejsca przy każdym przyciętym, przesuniętym
+    // albo drugim klipie. Teraz każdy klip głównej ścieżki osobno: plik czytany tylko w użytym
+    // zakresie, trafienie przeliczone na oś czasu (start klipu + przesunięcie w pliku).
+    // Klip ze zmianą prędkości/odwrócony (isRetimed) pomijamy jawnie — liniowe przeliczenie
+    // dałoby złe czasy, a FCP-owe convertTime:toContainer: odwrócenia nie uwzględnia.
+    // Parametr fileURL: stare zachowanie, czasy w pliku (bez osi czasu).
+    NSMutableArray<NSDictionary *> *segments = [NSMutableArray array];
+    NSMutableArray<NSDictionary *> *skipped = [NSMutableArray array];
     NSString *urlStr = params[@"fileURL"];
     if (urlStr) {
-        mediaURL = [NSURL fileURLWithPath:urlStr];
+        [segments addObject:@{@"url": [NSURL fileURLWithPath:urlStr], @"name": urlStr.lastPathComponent,
+                              @"srcStart": @0, @"srcEnd": @(DBL_MAX), @"tlStart": @0, @"fileTime": @YES}];
     } else {
-        // Get from timeline
         SpliceKit_executeOnMainThread(^{
             @try {
                 id timeline = SpliceKit_getActiveTimelineModule();
                 if (!timeline) return;
                 id sequence = ((id (*)(id, SEL))objc_msgSend)(timeline, @selector(sequence));
                 if (!sequence) return;
-
-                // Get primary object -> containedItems -> first clip -> media URL
                 SEL poSel = NSSelectorFromString(@"primaryObject");
                 if (![sequence respondsToSelector:poSel]) return;
                 id primaryObj = ((id (*)(id, SEL))objc_msgSend)(sequence, poSel);
                 if (!primaryObj) return;
+                id items = ((id (*)(id, SEL))objc_msgSend)(primaryObj, @selector(containedItems));
+                if (![items isKindOfClass:[NSArray class]]) return;
 
-                SEL ciSel = @selector(containedItems);
-                if (![primaryObj respondsToSelector:ciSel]) return;
-                id items = ((id (*)(id, SEL))objc_msgSend)(primaryObj, ciSel);
-                if (!items) return;
-
-                // Find the longest clip (skip tiny remnants)
-                id bestItem = nil;
-                double bestDur = 0;
+                SEL erSel = NSSelectorFromString(@"effectiveRangeOfObject:");
+                SEL fromSel = NSSelectorFromString(@"convertTime:fromContainer:");
+                SEL retimedSel = NSSelectorFromString(@"isRetimed");
                 for (id item in (NSArray *)items) {
-                    if ([item respondsToSelector:@selector(duration)]) {
-                        SpliceKit_CMTime d = ((SpliceKit_CMTime (*)(id, SEL))STRET_MSG)(item, @selector(duration));
-                        double dur = (d.timescale > 0) ? (double)d.value / d.timescale : 0;
-                        if (dur > bestDur) { bestDur = dur; bestItem = item; }
+                    NSString *name = [item respondsToSelector:@selector(displayName)]
+                        ? (((id (*)(id, SEL))objc_msgSend)(item, @selector(displayName)) ?: @"") : @"";
+                    // Klip = kontener z komponentem, który ma plik; przerwy i przejścia odpadają same.
+                    id comp = item;
+                    if ([item respondsToSelector:@selector(containedItems)]) {
+                        id inner = ((id (*)(id, SEL))objc_msgSend)(item, @selector(containedItems));
+                        if ([inner isKindOfClass:[NSArray class]] && [(NSArray *)inner count] > 0) comp = [(NSArray *)inner firstObject];
                     }
-                }
-                if (bestItem) {
+                    NSURL *url = nil;
                     @try {
-                        id mediaObj = bestItem;
-                        if ([bestItem respondsToSelector:ciSel]) {
-                            id innerItems = ((id (*)(id, SEL))objc_msgSend)(bestItem, ciSel);
-                            if ([innerItems isKindOfClass:[NSArray class]] && [(NSArray *)innerItems count] > 0) {
-                                mediaObj = [(NSArray *)innerItems objectAtIndex:0];
-                            }
-                        }
-                        id media = [mediaObj valueForKey:@"media"];
-                        if (media) {
-                            id rep = [media valueForKey:@"originalMediaRep"];
-                            if (rep) {
-                                id url = [rep valueForKey:@"fileURL"];
-                                if (url && [url isKindOfClass:[NSURL class]]) {
-                                    mediaURL = url;
-                                }
-                            }
-                        }
+                        id rep = [[comp valueForKey:@"media"] valueForKey:@"originalMediaRep"];
+                        id u = [rep valueForKey:@"fileURL"];
+                        if ([u isKindOfClass:[NSURL class]]) url = u;
                     } @catch (NSException *e) {}
+                    if (!url) continue;
+
+                    if ([item respondsToSelector:retimedSel] && ((BOOL (*)(id, SEL))objc_msgSend)(item, retimedSel)) {
+                        [skipped addObject:@{@"clip": name, @"reason": @"retimed or reversed — timeline times would be wrong"}];
+                        continue;
+                    }
+                    if (![primaryObj respondsToSelector:erSel] || ![comp respondsToSelector:fromSel]) {
+                        [skipped addObject:@{@"clip": name, @"reason": @"cannot map clip time to timeline"}];
+                        continue;
+                    }
+                    SpliceKit_CMTimeRange r = ((SpliceKit_CMTimeRange (*)(id, SEL, id))STRET_MSG)(primaryObj, erSel, item);
+                    if (r.start.timescale <= 0 || r.duration.timescale <= 0) {
+                        [skipped addObject:@{@"clip": name, @"reason": @"no timeline range"}];
+                        continue;
+                    }
+                    SpliceKit_CMTime tlEndT = {r.start.value * r.duration.timescale + r.duration.value * r.start.timescale,
+                                               r.start.timescale * r.duration.timescale, 1, 0};
+                    typedef SpliceKit_CMTime (*ConvFn)(id, SEL, SpliceKit_CMTime, id);
+                    SpliceKit_CMTime s0 = ((ConvFn)STRET_MSG)(comp, fromSel, r.start, primaryObj);
+                    SpliceKit_CMTime s1 = ((ConvFn)STRET_MSG)(comp, fromSel, tlEndT, primaryObj);
+                    if (s0.timescale <= 0 || s1.timescale <= 0) {
+                        [skipped addObject:@{@"clip": name, @"reason": @"clip time conversion failed"}];
+                        continue;
+                    }
+                    [segments addObject:@{
+                        @"url": url, @"name": name, @"item": item,
+                        @"tlStart": @((double)r.start.value / r.start.timescale),
+                        @"srcStart": @((double)s0.value / s0.timescale),
+                        @"srcEnd": @((double)s1.value / s1.timescale),
+                    }];
                 }
             } @catch (NSException *e) {
-                SpliceKit_log(@"Exception getting media URL: %@", e.reason);
+                SpliceKit_log(@"Exception collecting clips for scene detection: %@", e.reason);
             }
         });
     }
 
-    if (!mediaURL) {
+    if (segments.count == 0) {
+        if (skipped.count > 0) {
+            return @{@"error": @"No clip could be analyzed.", @"skipped": skipped};
+        }
         return @{@"error": @"No media file found. Open a project with media on the timeline."};
     }
 
-    SpliceKit_log(@"Scene detection starting on: %@ (threshold=%.2f, interval=%.2fs)",
-                  mediaURL.path, threshold, sampleInterval);
-
-    // Run scene detection synchronously on this thread (called from background)
-    AVAsset *asset = [AVAsset assetWithURL:mediaURL];
-    NSError *error = nil;
-    AVAssetReader *reader = [[AVAssetReader alloc] initWithAsset:asset error:&error];
-    if (error || !reader) {
-        return @{@"error": [NSString stringWithFormat:@"Cannot read media: %@", error.localizedDescription]};
-    }
-
-    NSArray<AVAssetTrack *> *videoTracks = [asset tracksWithMediaType:AVMediaTypeVideo];
-    if (videoTracks.count == 0) {
-        return @{@"error": @"No video track in media file"};
-    }
-
-    AVAssetTrack *videoTrack = videoTracks[0];
-    NSDictionary *outputSettings = @{
-        (NSString *)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA),
-    };
-    AVAssetReaderTrackOutput *output = [AVAssetReaderTrackOutput
-        assetReaderTrackOutputWithTrack:videoTrack outputSettings:outputSettings];
-    output.alwaysCopiesSampleData = NO;
-    [reader addOutput:output];
-
-    if (![reader startReading]) {
-        return @{@"error": [NSString stringWithFormat:@"Cannot start reading: %@", reader.error.localizedDescription]};
-    }
-
-    // Histogram comparison for scene detection
-    double duration = CMTimeGetSeconds(asset.duration);
-    double frameRate = videoTrack.nominalFrameRate;
-    int framesPerSample = (int)(frameRate * sampleInterval);
-    if (framesPerSample < 1) framesPerSample = 1;
-
-    vImagePixelCount prevHistR[256] = {0}, prevHistG[256] = {0}, prevHistB[256] = {0};
-    BOOL hasPrevHist = NO;
     NSMutableArray *sceneChanges = [NSMutableArray array];
-    int frameIndex = 0;
+    NSMutableArray *sceneTargets = [NSMutableArray array];   // klip osi czasu dla każdego trafienia (markery)
+    NSMutableArray *analyzed = [NSMutableArray array];
+    NSURL *mediaURL = segments.firstObject[@"url"];
+    double duration = 0;
     int sampledFrames = 0;
 
-    while (reader.status == AVAssetReaderStatusReading) {
-        @autoreleasepool {
-            CMSampleBufferRef sampleBuffer = [output copyNextSampleBuffer];
-            if (!sampleBuffer) break;
+    for (NSDictionary *seg in segments) {
+        NSURL *url = seg[@"url"];
+        double srcStart = [seg[@"srcStart"] doubleValue], srcEnd = [seg[@"srcEnd"] doubleValue];
+        double tlStart = [seg[@"tlStart"] doubleValue];
+        BOOL fileTime = [seg[@"fileTime"] boolValue];
+        SpliceKit_log(@"Scene detection on %@: file %.2f–%.2fs → timeline %.2fs (threshold=%.2f, interval=%.2fs)",
+                      url.lastPathComponent, srcStart, srcEnd, tlStart, threshold, sampleInterval);
 
-            frameIndex++;
-            // Only analyze every Nth frame
-            if (frameIndex % framesPerSample != 0) {
-                CFRelease(sampleBuffer);
-                continue;
-            }
-            sampledFrames++;
-
-            CMTime pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer);
-            double timeSec = CMTimeGetSeconds(pts);
-
-            CVImageBufferRef imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
-            if (!imageBuffer) {
-                CFRelease(sampleBuffer);
-                continue;
-            }
-
-            CVPixelBufferLockBaseAddress(imageBuffer, kCVPixelBufferLock_ReadOnly);
-
-            size_t width = CVPixelBufferGetWidth(imageBuffer);
-            size_t height = CVPixelBufferGetHeight(imageBuffer);
-            size_t bytesPerRow = CVPixelBufferGetBytesPerRow(imageBuffer);
-            void *baseAddr = CVPixelBufferGetBaseAddress(imageBuffer);
-
-            vImage_Buffer buf = { baseAddr, (vImagePixelCount)height, (vImagePixelCount)width, bytesPerRow };
-
-            // Compute ARGB histogram (BGRA in memory, but histogram bins are still useful)
-            vImagePixelCount *histPtrs[4];
-            vImagePixelCount histA[256] = {0}, histR[256] = {0}, histG[256] = {0}, histB[256] = {0};
-            histPtrs[0] = histB; // B channel (BGRA byte order)
-            histPtrs[1] = histG;
-            histPtrs[2] = histR;
-            histPtrs[3] = histA;
-            vImageHistogramCalculation_ARGB8888(&buf, histPtrs, kvImageNoFlags);
-
-            if (hasPrevHist) {
-                // Compare histograms: normalized absolute difference
-                double totalPixels = (double)(width * height);
-                double diffR = 0, diffG = 0, diffB = 0;
-                for (int i = 0; i < 256; i++) {
-                    diffR += fabs((double)histR[i] - (double)prevHistR[i]);
-                    diffG += fabs((double)histG[i] - (double)prevHistG[i]);
-                    diffB += fabs((double)histB[i] - (double)prevHistB[i]);
-                }
-                double normalizedDiff = (diffR + diffG + diffB) / (3.0 * totalPixels);
-
-                if (normalizedDiff > threshold) {
-                    [sceneChanges addObject:@{
-                        @"time": @(timeSec),
-                        @"score": @(normalizedDiff),
-                    }];
-                    SpliceKit_log(@"Scene change at %.2fs (score=%.3f)", timeSec, normalizedDiff);
-                }
-            }
-
-            // Store current histogram as previous
-            memcpy(prevHistR, histR, sizeof(prevHistR));
-            memcpy(prevHistG, histG, sizeof(prevHistG));
-            memcpy(prevHistB, histB, sizeof(prevHistB));
-            hasPrevHist = YES;
-
-            CVPixelBufferUnlockBaseAddress(imageBuffer, kCVPixelBufferLock_ReadOnly);
-            CFRelease(sampleBuffer);
+        AVAsset *asset = [AVAsset assetWithURL:url];
+        NSError *error = nil;
+        AVAssetReader *reader = [[AVAssetReader alloc] initWithAsset:asset error:&error];
+        if (error || !reader) {
+            [skipped addObject:@{@"clip": seg[@"name"], @"reason": [NSString stringWithFormat:@"cannot read media: %@", error.localizedDescription]}];
+            continue;
         }
+        NSArray<AVAssetTrack *> *videoTracks = [asset tracksWithMediaType:AVMediaTypeVideo];
+        if (videoTracks.count == 0) {
+            [skipped addObject:@{@"clip": seg[@"name"], @"reason": @"no video track"}];
+            continue;
+        }
+        AVAssetTrack *videoTrack = videoTracks[0];
+        double fileDur = CMTimeGetSeconds(asset.duration);
+        if (srcEnd > fileDur) srcEnd = fileDur;
+        if (srcStart < 0) srcStart = 0;
+        if (srcEnd <= srcStart) {
+            [skipped addObject:@{@"clip": seg[@"name"], @"reason": @"empty source range"}];
+            continue;
+        }
+        reader.timeRange = CMTimeRangeMake(CMTimeMakeWithSeconds(srcStart, 600),
+                                           CMTimeMakeWithSeconds(srcEnd - srcStart, 600));
+        AVAssetReaderTrackOutput *output = [AVAssetReaderTrackOutput
+            assetReaderTrackOutputWithTrack:videoTrack
+                             outputSettings:@{(NSString *)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA)}];
+        output.alwaysCopiesSampleData = NO;
+        [reader addOutput:output];
+        if (![reader startReading]) {
+            [skipped addObject:@{@"clip": seg[@"name"], @"reason": [NSString stringWithFormat:@"cannot start reading: %@", reader.error.localizedDescription]}];
+            continue;
+        }
+        duration += srcEnd - srcStart;
+        [analyzed addObject:@{@"clip": seg[@"name"], @"file": url.lastPathComponent ?: @"",
+                              @"fileStart": @(srcStart), @"fileEnd": @(srcEnd), @"timelineStart": @(tlStart)}];
+
+        double frameRate = videoTrack.nominalFrameRate;
+        int framesPerSample = (int)(frameRate * sampleInterval);
+        if (framesPerSample < 1) framesPerSample = 1;
+
+        vImagePixelCount prevHistR[256] = {0}, prevHistG[256] = {0}, prevHistB[256] = {0};
+        BOOL hasPrevHist = NO;
+        int frameIndex = 0;
+
+        while (reader.status == AVAssetReaderStatusReading) {
+            @autoreleasepool {
+                CMSampleBufferRef sampleBuffer = [output copyNextSampleBuffer];
+                if (!sampleBuffer) break;
+
+                frameIndex++;
+                if (frameIndex % framesPerSample != 0) {
+                    CFRelease(sampleBuffer);
+                    continue;
+                }
+                sampledFrames++;
+
+                double srcSec = CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sampleBuffer));
+                CVImageBufferRef imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
+                if (!imageBuffer) {
+                    CFRelease(sampleBuffer);
+                    continue;
+                }
+                CVPixelBufferLockBaseAddress(imageBuffer, kCVPixelBufferLock_ReadOnly);
+                size_t width = CVPixelBufferGetWidth(imageBuffer);
+                size_t height = CVPixelBufferGetHeight(imageBuffer);
+                vImage_Buffer buf = { CVPixelBufferGetBaseAddress(imageBuffer), (vImagePixelCount)height,
+                                      (vImagePixelCount)width, CVPixelBufferGetBytesPerRow(imageBuffer) };
+
+                // BGRA w pamięci: kanał 0 = B, 1 = G, 2 = R, 3 = A
+                vImagePixelCount histA[256] = {0}, histR[256] = {0}, histG[256] = {0}, histB[256] = {0};
+                vImagePixelCount *histPtrs[4] = {histB, histG, histR, histA};
+                vImageHistogramCalculation_ARGB8888(&buf, histPtrs, kvImageNoFlags);
+
+                if (hasPrevHist) {
+                    double totalPixels = (double)(width * height);
+                    double diffR = 0, diffG = 0, diffB = 0;
+                    for (int i = 0; i < 256; i++) {
+                        diffR += fabs((double)histR[i] - (double)prevHistR[i]);
+                        diffG += fabs((double)histG[i] - (double)prevHistG[i]);
+                        diffB += fabs((double)histB[i] - (double)prevHistB[i]);
+                    }
+                    double normalizedDiff = (diffR + diffG + diffB) / (3.0 * totalPixels);
+                    if (normalizedDiff > threshold) {
+                        double t = fileTime ? srcSec : tlStart + (srcSec - srcStart);
+                        [sceneChanges addObject:@{
+                            @"time": @(t),
+                            @"sourceTime": @(srcSec),
+                            @"clip": seg[@"name"] ?: @"",
+                            @"score": @(normalizedDiff),
+                        }];
+                        [sceneTargets addObject:seg[@"item"] ?: [NSNull null]];
+                        SpliceKit_log(@"Scene change at %.2fs (file %.2fs, score=%.3f)", t, srcSec, normalizedDiff);
+                    }
+                }
+                memcpy(prevHistR, histR, sizeof(prevHistR));
+                memcpy(prevHistG, histG, sizeof(prevHistG));
+                memcpy(prevHistB, histB, sizeof(prevHistB));
+                hasPrevHist = YES;
+
+                CVPixelBufferUnlockBaseAddress(imageBuffer, kCVPixelBufferLock_ReadOnly);
+                CFRelease(sampleBuffer);
+            }
+        }
+        [reader cancelReading];
     }
 
-    [reader cancelReading];
-
-    SpliceKit_log(@"Scene detection complete: %lu changes found in %.1fs (%d frames sampled)",
-                  (unsigned long)sceneChanges.count, duration, sampledFrames);
+    SpliceKit_log(@"Scene detection complete: %lu changes in %lu clip(s), %.1fs analyzed (%d frames sampled), %lu skipped",
+                  (unsigned long)sceneChanges.count, (unsigned long)analyzed.count, duration, sampledFrames,
+                  (unsigned long)skipped.count);
 
     // If action is "markers" or "blade", apply them programmatically (no playhead movement)
     if (([action isEqualToString:@"markers"] || [action isEqualToString:@"blade"]) && sceneChanges.count > 0) {
@@ -7638,22 +7668,7 @@ NSDictionary *SpliceKit_handleDetectSceneChanges(NSDictionary *params) {
                     frameDur = ((SpliceKit_CMTime (*)(id, SEL))STRET_MSG)(sequence, fdSel);
                 }
 
-                // Get the primary object and find the target clip (longest one)
-                id primaryObj = ((id (*)(id, SEL))objc_msgSend)(sequence, NSSelectorFromString(@"primaryObject"));
-                if (!primaryObj) return;
-                id containedItems = ((id (*)(id, SEL))objc_msgSend)(primaryObj, @selector(containedItems));
-                if (![containedItems isKindOfClass:[NSArray class]]) return;
-
-                id targetClip = nil;
-                double bestDur = 0;
-                for (id item in (NSArray *)containedItems) {
-                    if ([item respondsToSelector:@selector(duration)]) {
-                        SpliceKit_CMTime d = ((SpliceKit_CMTime (*)(id, SEL))STRET_MSG)(item, @selector(duration));
-                        double dur = (d.timescale > 0) ? (double)d.value / d.timescale : 0;
-                        if (dur > bestDur) { bestDur = dur; targetClip = item; }
-                    }
-                }
-                if (!targetClip) return;
+                // mikagosz: każde trafienie ma swój klip (sceneTargets) — nie „najdłuższy”.
 
                 if ([action isEqualToString:@"markers"]) {
                     // Add markers programmatically via actionAddMarkerToAnchoredObject:isToDo:isChapter:withRange:error:
@@ -7666,7 +7681,10 @@ NSDictionary *SpliceKit_handleDetectSceneChanges(NSDictionary *params) {
                     typedef BOOL (*AddMarkerFn)(id, SEL, id, BOOL, BOOL, SpliceKit_CMTimeRange, NSError **);
                     AddMarkerFn addMarker = (AddMarkerFn)objc_msgSend;
 
-                    for (NSDictionary *sc in sceneChanges) {
+                    for (NSUInteger si = 0; si < sceneChanges.count; si++) {
+                        NSDictionary *sc = sceneChanges[si];
+                        id targetClip = sceneTargets[si];
+                        if (targetClip == [NSNull null]) continue;
                         double t = [sc[@"time"] doubleValue];
                         int32_t ts = 600;
                         SpliceKit_CMTime markerTime = {(int64_t)round(t * ts), ts, 1, 0};
@@ -7700,6 +7718,8 @@ NSDictionary *SpliceKit_handleDetectSceneChanges(NSDictionary *params) {
                 @"threshold": @(threshold),
                 @"action": action,
                 @"mediaFile": mediaURL.lastPathComponent ?: @"",
+                @"clips": analyzed,
+                @"skipped": skipped,
             }];
             return mutableResult;
         }
@@ -7712,6 +7732,8 @@ NSDictionary *SpliceKit_handleDetectSceneChanges(NSDictionary *params) {
         @"threshold": @(threshold),
         @"action": action,
         @"mediaFile": mediaURL.lastPathComponent ?: @"",
+        @"clips": analyzed,
+        @"skipped": skipped,
     };
 }
 
