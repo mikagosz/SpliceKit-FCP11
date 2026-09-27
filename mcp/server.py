@@ -556,7 +556,7 @@ TIMELINE_EDIT_ACTIONS = {
     "insertPlaceholder", "addAdjustmentClip", "addColorBoard", "addColorWheels",
     "addColorCurves", "addColorAdjustment", "addHueSaturation",
     "addEnhanceLightAndColor", "balanceColor", "matchColor",
-    "addMagneticMask", "smartConform", "adjustVolumeUp", "adjustVolumeDown",
+    "addMagneticMask", "smartConform", "adjustVolumeUp", "adjustVolumeDown", "adjustVolumeReset",
     "expandAudio", "expandAudioComponents", "addChannelEQ", "enhanceAudio",
     "matchAudio", "detachAudio", "addBasicTitle", "addBasicLowerThird",
     "addKeyframe",

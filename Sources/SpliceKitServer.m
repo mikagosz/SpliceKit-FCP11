@@ -2671,8 +2671,13 @@ static NSDictionary *SpliceKit_handleTimelineActionImpl(NSDictionary *params) {
         @"addEnhanceLightAndColor":@"addEnhanceLightAndColorEffect:",
 
         // Volume
-        @"adjustVolumeUp":         @"adjustVolumeRelative:",
-        @"adjustVolumeDown":       @"adjustVolumeAbsolute:",
+        // mikagosz: 11.2 Modify > Adjust Volume > Up/Down (±1 dB). Było adjustVolumeRelative:/
+        // adjustVolumeAbsolute: — to okienka do wpisania wartości, projekt się nie zmieniał.
+        @"adjustVolumeUp":         @"volumeUp:",
+        @"adjustVolumeDown":       @"volumeDown:",
+        @"adjustVolumeReset":      @"volumeZero:",
+        @"adjustVolumeRelative":   @"adjustVolumeRelative:",
+        @"adjustVolumeAbsolute":   @"adjustVolumeAbsolute:",
 
         // Titles
         @"addBasicTitle":          @"addBasicTitle:",
