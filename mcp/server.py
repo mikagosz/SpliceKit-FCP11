@@ -1067,6 +1067,12 @@ def playback_action(action: str) -> str:
              playRate16X, playRate32X, playRateHalf, playRateMinusHalf,
              playRateMinus1X, playRateMinus2X, playRateMinus32X
 
+    Also: goToRangeStart, goToRangeEnd (Mark > Go to > Range Start/End).
+
+    goToStart/goToEnd/goToRange*/nextFrame/prevFrame/nextFrame10/prevFrame10 work
+    with FCP in the background. Play-type actions need FCP frontmost: when the
+    playhead does not move they return an error instead of a false "ok".
+
     For precise speed control, use set_playback_speed() instead.
     """
     return _call_or_error("playback.action", action=action)
@@ -1258,7 +1264,8 @@ def set_timeline_range(start_seconds: float, end_seconds: float) -> str:
         f"Range set: {r.get('startSeconds', 0):.3f}s - {r.get('endSeconds', 0):.3f}s\n"
         f"Mark in: {'OK' if r.get('rangeStartSet') else 'FAILED'}\n"
         f"Mark out: {'OK' if r.get('rangeEndSet') else 'FAILED'}"
-    )
+        + (f"\nRanges confirmed by FCP: {r['selectedRanges']}" if "selectedRanges" in r else "")
+    ) if r.get("status", "ok") == "ok" else "Error: range not set in FCP — " + _fmt(r)
 
 
 @mcp.tool(annotations=_tool_annotations("batch_export"))

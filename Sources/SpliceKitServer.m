@@ -70,6 +70,7 @@ static NSDictionary *SpliceKit_sendAppAction(NSString *selectorName);
 static NSDictionary *SpliceKit_sendPlayerAction(NSString *selectorName);
 id SpliceKit_getActiveTimelineModule(void);
 static id SpliceKit_getEditorContainer(void);
+static id SpliceKit_getAppDelegate(void);
 static id SpliceKit_getSelectedTimelineItem(id timeline);
 static id SpliceKit_getClipEffectStack(id clip);
 static id SpliceKit_getSelectedClipEffectStack(id timeline, id *outClip);
@@ -212,6 +213,7 @@ typedef struct { int64_t value; int32_t timescale; uint32_t flags; int64_t epoch
 typedef struct { SpliceKit_CMTime start; SpliceKit_CMTime duration; } SpliceKit_CMTimeRange;
 
 static SpliceKit_CMTimeRange SpliceKit_clipRangeForItem(id item);
+static SpliceKit_CMTime SpliceKit_buildCMTime(double seconds, id timeline);
 static NSDictionary *SpliceKit_prepareBrowserClipSourceForInsertion(id sourceBrowserClip,
                                                                     SpliceKit_CMTimeRange clipRange,
                                                                     BOOL preferAudio);
@@ -2634,9 +2636,12 @@ NSDictionary *SpliceKit_handleTimelineAction(NSDictionary *params) {
         @"shareSelection":   @"shareSelection:",
 
         // Range selection (in/out points)
-        @"setRangeStart":    @"setRangeStart:",
-        @"setRangeEnd":      @"setRangeEnd:",
-        @"clearRange":       @"clearRange:",
+        // mikagosz: w 11.2 menu Mark > Set Range Start/End/Clear to setSelectionStart:/
+        // setSelectionEnd:/clearSelection: na FFAnchoredTimelineModule; setRangeStart: itd.
+        // to tylko settery klas danych (FFTimelineRangeItem) — „Timeline module does not respond”.
+        @"setRangeStart":    @"setSelectionStart:",
+        @"setRangeEnd":      @"setSelectionEnd:",
+        @"clearRange":       @"clearSelection:",
 
         // Keyframes
         @"addKeyframe":      @"addKeyframe:",
@@ -2749,7 +2754,7 @@ NSDictionary *SpliceKit_handleTimelineAction(NSDictionary *params) {
         @"showAudioAnimation": @"showTimelineCurveEditor:",
         @"soloAnimation":    @"collapseTimelineCurveEditor:",
         @"showTrackingEditor": @"toggleTrackingEditor:",
-        @"showCinematicEditor": @"showCinematicEditor:",
+        @"showCinematicEditor": @"toggleCinematicEditor:",   // mikagosz: 11.2 Clip > Show Generic Editor
         @"showMagneticMaskEditor": @"toggleSegmentationMaskEditor:",
         @"enableBeatDetection": @"enableBeatDetection:",
 
@@ -2775,7 +2780,7 @@ NSDictionary *SpliceKit_handleTimelineAction(NSDictionary *params) {
 
         // Window/workspace
         @"backgroundTasks":  @"goToBackgroundTaskList:",
-        @"showDuplicateRanges": @"showDuplicateRanges:",
+        @"showDuplicateRanges": @"toggleDupeDetection:",    // mikagosz: 11.2 View > Show Duplicate Ranges
 
         // Roles
         @"editRoles":        @"editRoles:",
@@ -3356,14 +3361,49 @@ NSDictionary *SpliceKit_handleTimelineAction(NSDictionary *params) {
         return todoResult ?: @{@"error": @"Failed to add todo marker"};
     }
 
+    // mikagosz: beat detection jest dopiero w FCP 12.x — w menu 11.2 go nie ma.
+    if ([selector isEqualToString:@"toggleBeatDetectionGrid:"] || [selector isEqualToString:@"enableBeatDetection:"]) {
+        return @{@"error": [NSString stringWithFormat:@"%@ does not exist in FCP 11.2 (beat detection arrived in 12.x)", action]};
+    }
+
     // First try on the timeline module directly (fastest, most specific)
     NSDictionary *result = SpliceKit_sendTimelineAction(selector);
 
-    // If timeline module doesn't respond, fall back to responder chain
+    // mikagosz: potem znane obiekty WPROST, zanim łańcuch responderów. Przy FCP w tle nie ma
+    // key/main window, więc łańcuch kończy na NSApp i delegacie: akcje widoku osi czasu,
+    // kontenera edytora albo okna (toggleFullScreen:) giną z „No responder” albo fałszywym „ok”.
     if (result[@"error"]) {
         NSString *errMsg = result[@"error"];
+        if ([errMsg containsString:@"does not respond"]) {
+            __block NSDictionary *direct = nil;
+            SpliceKit_executeOnMainThread(^{
+                @try {
+                    SEL sel = NSSelectorFromString(selector);
+                    id timeline = SpliceKit_getActiveTimelineModule();
+                    id view = nil;
+                    SEL tvSel = NSSelectorFromString(@"timelineView");
+                    if (timeline && [timeline respondsToSelector:tvSel]) view = ((id (*)(id, SEL))objc_msgSend)(timeline, tvSel);
+                    id window = [view respondsToSelector:@selector(window)] ? ((id (*)(id, SEL))objc_msgSend)(view, @selector(window)) : nil;
+                    NSArray *targets = @[view ?: [NSNull null], SpliceKit_getEditorContainer() ?: [NSNull null],
+                                         SpliceKit_getAppDelegate() ?: [NSNull null], window ?: [NSNull null]];
+                    NSArray *names = @[@"timelineView", @"editorContainer", @"appDelegate", @"mainWindow"];
+                    for (NSUInteger i = 0; i < targets.count; i++) {
+                        id t = targets[i];
+                        if (t == [NSNull null] || ![t respondsToSelector:sel]) continue;
+                        ((void (*)(id, SEL, id))objc_msgSend)(t, sel, nil);
+                        direct = @{@"action": selector, @"status": @"ok", @"target": names[i]};
+                        return;
+                    }
+                } @catch (NSException *e) {
+                    direct = @{@"error": [NSString stringWithFormat:@"Exception: %@", e.reason]};
+                }
+            });
+            if (direct) return direct;
+        }
         if ([errMsg containsString:@"does not respond"] || [errMsg containsString:@"No active"]) {
-            return SpliceKit_sendAppAction(selector);
+            NSMutableDictionary *chain = [SpliceKit_sendAppAction(selector) mutableCopy];
+            if (!chain[@"error"]) chain[@"target"] = @"responderChain (effect not verified)";
+            return chain;
         }
     }
 
@@ -4453,6 +4493,9 @@ NSDictionary *SpliceKit_handlePlayback(NSDictionary *params) {
         @"playRateMinus1X":   @"playRateMinus1X:",
         @"playRateMinus2X":   @"playRateMinus2X:",
         @"playRateMinus32X":  @"playRateMinus32X:",
+        // mikagosz: Mark > Go to > Range Start / Range End
+        @"goToRangeStart":    @"gotoIn:",
+        @"goToRangeEnd":      @"gotoOut:",
     };
 
     NSString *selector = actionMap[action];
@@ -4463,7 +4506,98 @@ NSDictionary *SpliceKit_handlePlayback(NSDictionary *params) {
         }
     }
 
-    return SpliceKit_sendAppAction(selector);
+    // mikagosz: przy FCP w tle (brak key/main window) łańcuch responderów zwraca „wysłane”,
+    // a głowica stoi (sprawdzone 2026-09-27: wszystkie 26 akcji „ok”, zero ruchu). Nawigację
+    // robimy bez łańcucha: początek/koniec/zakres przez widok i moduł osi czasu, klatki przez
+    // setPlayheadTime:. Odtwarzanie idzie łańcuchem jak dotąd, ale sprawdzamy, czy ruszyło.
+    NSDictionary *frameSteps = @{@"stepForward:": @1, @"stepBackward:": @-1,
+                                 @"stepForward10Frames:": @10, @"stepBackward10Frames:": @-10};
+    NSDictionary *viewTargets = @{@"gotoStart:": @"view", @"gotoEnd:": @"view",
+                                  @"gotoIn:": @"module", @"gotoOut:": @"module"};
+    if (frameSteps[selector] || viewTargets[selector]) {
+        __block NSDictionary *result = nil;
+        SpliceKit_executeOnMainThread(^{
+            @try {
+                id timeline = SpliceKit_getActiveTimelineModule();
+                if (!timeline) { result = @{@"error": @"No active timeline module"}; return; }
+                SEL phSel = NSSelectorFromString(@"playheadTime");
+                SpliceKit_CMTime before = ((SpliceKit_CMTime (*)(id, SEL))STRET_MSG)(timeline, phSel);
+                if (frameSteps[selector]) {
+                    id sequence = ((id (*)(id, SEL))objc_msgSend)(timeline, @selector(sequence));
+                    SpliceKit_CMTime fd = {1, 30, 1, 0};
+                    SEL fdSel = NSSelectorFromString(@"frameDuration");
+                    if (sequence && [sequence respondsToSelector:fdSel]) {
+                        fd = ((SpliceKit_CMTime (*)(id, SEL))STRET_MSG)(sequence, fdSel);
+                    }
+                    double frame = fd.timescale > 0 ? (double)fd.value / fd.timescale : 1.0 / 30;
+                    double dur = 0;
+                    if (sequence && [sequence respondsToSelector:@selector(duration)]) {
+                        SpliceKit_CMTime d = ((SpliceKit_CMTime (*)(id, SEL))STRET_MSG)(sequence, @selector(duration));
+                        dur = d.timescale > 0 ? (double)d.value / d.timescale : 0;
+                    }
+                    double now = before.timescale > 0 ? (double)before.value / before.timescale : 0;
+                    double target = now + [frameSteps[selector] intValue] * frame;
+                    if (target < 0) target = 0;
+                    if (dur > 0 && target > dur) target = dur;
+                    SpliceKit_CMTime t = SpliceKit_buildCMTime(target, timeline);
+                    ((void (*)(id, SEL, SpliceKit_CMTime))objc_msgSend)(timeline, @selector(setPlayheadTime:), t);
+                } else {
+                    id target = timeline;
+                    if ([viewTargets[selector] isEqualToString:@"view"]) {
+                        SEL tvSel = NSSelectorFromString(@"timelineView");
+                        target = [timeline respondsToSelector:tvSel]
+                            ? ((id (*)(id, SEL))objc_msgSend)(timeline, tvSel) : nil;
+                    }
+                    SEL sel = NSSelectorFromString(selector);
+                    if (!target || ![target respondsToSelector:sel]) {
+                        result = @{@"error": [NSString stringWithFormat:@"%@ not available on the timeline", selector]};
+                        return;
+                    }
+                    ((void (*)(id, SEL, id))objc_msgSend)(target, sel, nil);
+                }
+                SpliceKit_CMTime after = ((SpliceKit_CMTime (*)(id, SEL))STRET_MSG)(timeline, phSel);
+                double b = before.timescale > 0 ? (double)before.value / before.timescale : 0;
+                double a = after.timescale > 0 ? (double)after.value / after.timescale : 0;
+                result = @{@"status": @"ok", @"action": selector, @"from": @(b), @"seconds": @(a)};
+            } @catch (NSException *e) {
+                result = @{@"error": [NSString stringWithFormat:@"Exception: %@", e.reason]};
+            }
+        });
+        return result ?: @{@"error": @"Navigation failed"};
+    }
+
+    NSDictionary *sent = SpliceKit_sendAppAction(selector);
+    if (sent[@"error"]) return sent;
+
+    // Czy coś się ruszyło? stop/loop nie mają czego sprawdzać.
+    if ([selector isEqualToString:@"stopPlaying:"] || [selector isEqualToString:@"loop:"]) return sent;
+    __block BOOL moved = NO;
+    __block double t0 = -1;
+    SpliceKit_executeOnMainThread(^{
+        id timeline = SpliceKit_getActiveTimelineModule();
+        SEL phSel = NSSelectorFromString(@"playheadTime");
+        if (timeline && [timeline respondsToSelector:phSel]) {
+            SpliceKit_CMTime t = ((SpliceKit_CMTime (*)(id, SEL))STRET_MSG)(timeline, phSel);
+            t0 = t.timescale > 0 ? (double)t.value / t.timescale : -1;
+        }
+    });
+    [NSThread sleepForTimeInterval:0.35];
+    SpliceKit_executeOnMainThread(^{
+        id timeline = SpliceKit_getActiveTimelineModule();
+        SEL phSel = NSSelectorFromString(@"playheadTime");
+        if (timeline && [timeline respondsToSelector:phSel]) {
+            SpliceKit_CMTime t = ((SpliceKit_CMTime (*)(id, SEL))STRET_MSG)(timeline, phSel);
+            double t1 = t.timescale > 0 ? (double)t.value / t.timescale : -1;
+            moved = fabs(t1 - t0) > 0.001;
+        }
+    });
+    if (!moved) {
+        return @{@"error": [NSString stringWithFormat:
+            @"%@ was accepted but playback did not start (playhead did not move in 0.35 s). "
+            @"Usually FCP is in the background — it has no key window, so playback commands go nowhere. "
+            @"seek_to_time and goToStart/goToEnd/nextFrame/prevFrame work without it.", selector]};
+    }
+    return sent;
 }
 
 NSDictionary *SpliceKit_handlePlaybackSeek(NSDictionary *params) {
@@ -4498,6 +4632,18 @@ NSDictionary *SpliceKit_handlePlaybackSeek(NSDictionary *params) {
 
             // Build CMTime from seconds
             double secs = [seconds doubleValue];
+            // mikagosz: 99 s na 12,8-sekundowym projekcie i -3 s przechodziły — głowica stała
+            // poza projektem. Przycinamy do [0, długość] i mówimy o tym w wyniku.
+            double requested = secs;
+            if ([timeline respondsToSelector:@selector(sequence)]) {
+                id seqForDur = ((id (*)(id, SEL))objc_msgSend)(timeline, @selector(sequence));
+                if (seqForDur && [seqForDur respondsToSelector:@selector(duration)]) {
+                    SpliceKit_CMTime d = ((SpliceKit_CMTime (*)(id, SEL))STRET_MSG)(seqForDur, @selector(duration));
+                    double dur = d.timescale > 0 ? (double)d.value / d.timescale : 0;
+                    if (dur > 0 && secs > dur) secs = dur;
+                }
+            }
+            if (secs < 0) secs = 0;
             SpliceKit_CMTime targetTime;
             targetTime.value = (int64_t)(secs * timescale);
             targetTime.timescale = timescale;
@@ -4509,11 +4655,16 @@ NSDictionary *SpliceKit_handlePlaybackSeek(NSDictionary *params) {
             if ([timeline respondsToSelector:setSel]) {
                 ((void (*)(id, SEL, SpliceKit_CMTime))objc_msgSend)(
                     timeline, setSel, targetTime);
-                result = @{
+                NSMutableDictionary *r = [@{
                     @"status": @"ok",
                     @"seconds": @(secs),
                     @"time": SpliceKit_serializeCMTime(targetTime),
-                };
+                } mutableCopy];
+                if (secs != requested) {
+                    r[@"requestedSeconds"] = @(requested);
+                    r[@"clamped"] = @YES;
+                }
+                result = r;
             } else {
                 result = @{@"error": @"Timeline module does not respond to setPlayheadTime:"};
             }
@@ -4916,12 +5067,24 @@ static BOOL SpliceKit_seekAndMark(id timeline, SpliceKit_CMTime time, NSString *
     // Let FCP update playhead position
     [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
 
-    // Send action via responder chain (works for setRangeStart:, setRangeEnd:, clearRange:, etc.)
-    id app = ((id (*)(id, SEL))objc_msgSend)(
-        objc_getClass("NSApplication"), @selector(sharedApplication));
-    SEL actionSel = NSSelectorFromString(actionSelector);
-    BOOL sent = ((BOOL (*)(id, SEL, SEL, id, id))objc_msgSend)(
-        app, @selector(sendAction:to:from:), actionSel, nil, nil);
+    // mikagosz: stare nazwy upstream → prawdziwe akcje 11.2, wysyłane PROSTO do modułu osi
+    // czasu. Łańcuch responderów przy FCP w tle (brak key/main window) mówi „wysłane”
+    // i nic nie robi — set_timeline_range raportował wtedy „Mark in: FAILED”.
+    NSDictionary *renamed = @{@"setRangeStart:": @"setSelectionStart:",
+                              @"setRangeEnd:": @"setSelectionEnd:",
+                              @"clearRange:": @"clearSelection:"};
+    NSString *realSelector = renamed[actionSelector] ?: actionSelector;
+    SEL actionSel = NSSelectorFromString(realSelector);
+    BOOL sent = NO;
+    if ([timeline respondsToSelector:actionSel]) {
+        ((void (*)(id, SEL, id))objc_msgSend)(timeline, actionSel, nil);
+        sent = YES;
+    } else {
+        id app = ((id (*)(id, SEL))objc_msgSend)(
+            objc_getClass("NSApplication"), @selector(sharedApplication));
+        sent = ((BOOL (*)(id, SEL, SEL, id, id))objc_msgSend)(
+            app, @selector(sendAction:to:from:), actionSel, nil, nil);
+    }
 
     [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
     return sent;
@@ -6044,12 +6207,20 @@ static NSDictionary *SpliceKit_handleSetRange(NSDictionary *params) {
             // Seek to end, mark out
             BOOL outOk = SpliceKit_seekAndMark(timeline, endTime, @"setRangeEnd:");
 
+            // mikagosz: potwierdzenie z FCP, nie tylko „wysłane” — zakres widać w selectedRangesOfMedia
+            NSUInteger ranges = 0;
+            SEL srSel = NSSelectorFromString(@"selectedRangesOfMedia");
+            if ([timeline respondsToSelector:srSel]) {
+                id sr = ((id (*)(id, SEL))objc_msgSend)(timeline, srSel);
+                if ([sr isKindOfClass:[NSArray class]]) ranges = [(NSArray *)sr count];
+            }
             result = @{
-                @"status": @"ok",
+                @"status": (inOk && outOk && ranges > 0) ? @"ok" : @"error",
                 @"startSeconds": @(startVal),
                 @"endSeconds": @(endVal),
                 @"rangeStartSet": @(inOk),
                 @"rangeEndSet": @(outOk),
+                @"selectedRanges": @(ranges),
             };
         } @catch (NSException *e) {
             result = @{@"error": [NSString stringWithFormat:@"Exception: %@", e.reason]};
@@ -6626,12 +6797,11 @@ NSDictionary *SpliceKit_handleBatchExport(NSDictionary *params) {
                 ((void (*)(id, SEL, id))objc_msgSend)(dest, setActionSel, origAction);
             }
 
-            // Clear range
-            id app = ((id (*)(id, SEL))objc_msgSend)(
-                objc_getClass("NSApplication"), @selector(sharedApplication));
-            ((BOOL (*)(id, SEL, SEL, id, id))objc_msgSend)(
-                app, @selector(sendAction:to:from:),
-                NSSelectorFromString(@"clearRange:"), nil, nil);
+            // Clear range (mikagosz: clearSelection: prosto do osi czasu — patrz SpliceKit_seekAndMark)
+            SEL clearSel = NSSelectorFromString(@"clearSelection:");
+            if ([timeline respondsToSelector:clearSel]) {
+                ((void (*)(id, SEL, id))objc_msgSend)(timeline, clearSel, nil);
+            }
 
             result = @{
                 @"status": @"ok",
