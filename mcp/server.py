@@ -7980,7 +7980,57 @@ def _apply_allowlist(server) -> None:
             server.remove_tool(tool.name)
 
 
+def _error_text(result):
+    """mikagosz: tekst błędu, jeśli wynik narzędzia jest porażką; inaczej None.
+
+    Narzędzia upstream zwracają błąd jako zwykły tekst ("Error: …", JSON z kluczem
+    "error" albo "status": "error"), a MCP widzi to jako sukces (isError = false).
+    """
+    if not isinstance(result, str):
+        return None
+    text = result.lstrip()
+    if text.startswith(("Error", "SpliceKit NOT connected")):
+        return result
+    if text.startswith("{"):
+        try:
+            data = json.loads(text)
+        except ValueError:
+            return None
+        if isinstance(data, dict) and ("error" in data or data.get("status") == "error"):
+            return result
+    return None
+
+
+def _raise_on_error_text(server) -> None:
+    """mikagosz: tekstowy błąd narzędzia → wyjątek, żeby MCP zwrócił isError = true.
+
+    Osłania fn każdego zarejestrowanego narzędzia; argumenty i opis zostają te same.
+    """
+    import functools
+    import inspect
+    from mcp.server.fastmcp.exceptions import ToolError
+
+    for tool in server._tool_manager.list_tools():
+        fn = tool.fn
+        if inspect.iscoroutinefunction(fn):
+            @functools.wraps(fn)
+            async def wrapped(*a, __fn=fn, **kw):
+                result = await __fn(*a, **kw)
+                if (msg := _error_text(result)) is not None:
+                    raise ToolError(msg)
+                return result
+        else:
+            @functools.wraps(fn)
+            def wrapped(*a, __fn=fn, **kw):
+                result = __fn(*a, **kw)
+                if (msg := _error_text(result)) is not None:
+                    raise ToolError(msg)
+                return result
+        tool.fn = wrapped
+
+
 # MCP servers communicate over stdio -- the AI tool framework handles the transport
 if __name__ == "__main__":
     _apply_allowlist(mcp)
+    _raise_on_error_text(mcp)
     mcp.run(transport="stdio")
