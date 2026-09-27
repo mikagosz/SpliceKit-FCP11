@@ -3872,9 +3872,12 @@ def share_project(destination: str = "") -> str:
     """Share/export the project using a specific or default destination.
 
     Args:
-        destination: Share destination name (e.g. "Export File", "Apple Devices 1080p",
-                     "YouTube & Facebook"). Leave empty for default destination.
-                     Use list_menus(menu="File") to see available Share destinations.
+        destination: Share destination as in File > Share, without the trailing "…" or
+                     "(default)" (FCP 11.2: "Export File", "Apple Devices 720p",
+                     "Apple Devices 1080p", "Apple Devices 4K", "Social Platforms",
+                     "HEVC - High Efficiency Video"). Leave empty for the default destination.
+                     Every destination opens a dialog — the result then says modal=true;
+                     use detect_dialog / click_dialog_button to continue or cancel.
     """
     params = {}
     if destination:

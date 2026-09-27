@@ -14646,6 +14646,20 @@ static NSDictionary *SpliceKit_handleBrowserConnectClip(NSDictionary *params) {
 // This is the escape hatch for actions that don't have a known ObjC selector.
 //
 
+// mikagosz: nazwa pozycji menu bez końcowego „…”/„...” i dopisku w nawiasie na końcu.
+// Menu 11.2: „Export File (default)…”, „Apple Devices 1080p…” — share_project("Export File")
+// dostawał „not found” (zmierzone 2026-09-27).
+static NSString *SpliceKit_menuTitleKey(NSString *title) {
+    NSString *t = [[title stringByReplacingOccurrencesOfString:@"…" withString:@""]
+                   stringByReplacingOccurrencesOfString:@"..." withString:@""];
+    t = [t stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+    if ([t hasSuffix:@")"]) {
+        NSRange open = [t rangeOfString:@" (" options:NSBackwardsSearch];
+        if (open.location != NSNotFound && open.location > 0) t = [t substringToIndex:open.location];
+    }
+    return [t lowercaseString];
+}
+
 NSDictionary *SpliceKit_handleMenuExecute(NSDictionary *params) {
     NSArray *menuPath = params[@"menuPath"];
     if (!menuPath || menuPath.count < 2) {
@@ -14686,6 +14700,17 @@ NSDictionary *SpliceKit_handleMenuExecute(NSDictionary *params) {
                             caseInsensitiveCompare:title] == NSOrderedSame) {
                         item = candidate;
                         break;
+                    }
+                }
+                if (!item) {
+                    NSString *key = SpliceKit_menuTitleKey(title);
+                    for (NSInteger j = 0; j < [currentMenu numberOfItems] && key.length; j++) {
+                        NSMenuItem *candidate = [currentMenu itemAtIndex:j];
+                        if (![candidate isSeparatorItem] &&
+                            [SpliceKit_menuTitleKey([candidate title]) isEqualToString:key]) {
+                            item = candidate;
+                            break;
+                        }
                     }
                 }
 
@@ -14792,6 +14817,13 @@ NSDictionary *SpliceKit_handleMenuExecute(NSDictionary *params) {
             result = @{@"error": [NSString stringWithFormat:@"Exception: %@", e.reason]};
         }
     });
+    if (!result && SpliceKit_lastMainThreadDispatchTimedOut()) {
+        // mikagosz: pozycja otworzyła okno modalne (np. „Apple Devices 1080p…”) — blok stoi
+        // w oknie. Było: fałszywe „Menu execute failed” po 20 s przy otwartym oknie.
+        return @{@"status": @"ok", @"modal": @YES, @"menuPath": menuPath,
+                 @"note": @"FCP's main thread stayed busy for 20 s — the menu item most likely opened a modal dialog. "
+                          @"Use detect_dialog / click_dialog_button / dismiss_dialog."};
+    }
     return result ?: @{@"error": @"Menu execute failed"};
 }
 
@@ -20446,6 +20478,17 @@ static NSDictionary *SpliceKit_handleCaptureInspector(NSDictionary *params) {
 NSDictionary *SpliceKit_handleFCPXMLExport(NSDictionary *params) {
     NSString *outputPath = params[@"path"] ?: @"/tmp/splicekit_export.fcpxml";
 
+    // mikagosz: katalog sprawdzony przed eksportem. Było: brak katalogu → „file doesn’t exist”,
+    // brak uprawnień (/System/…) → „Cross-device link” (zmierzone 2026-09-27).
+    NSString *outputDir = [[outputPath stringByExpandingTildeInPath] stringByDeletingLastPathComponent];
+    BOOL isDir = NO;
+    if (![[NSFileManager defaultManager] fileExistsAtPath:outputDir isDirectory:&isDir] || !isDir) {
+        return @{@"error": [NSString stringWithFormat:@"Folder does not exist: %@", outputDir]};
+    }
+    if (![[NSFileManager defaultManager] isWritableFileAtPath:outputDir]) {
+        return @{@"error": [NSString stringWithFormat:@"No permission to write to folder: %@", outputDir]};
+    }
+
     __block NSDictionary *result = nil;
 
     SpliceKit_executeOnMainThread(^{
@@ -20842,6 +20885,58 @@ static NSArray *SpliceKit_safeSubviews(NSView *view) {
     }
 }
 
+// mikagosz: pole wyboru po typie przycisku (NSButtonTypeSwitch). Było tylko po nazwie klasy /
+// allowsMixedState — w oknach 11.2 (Duplicate Project As…) żaden checkbox nie był rozpoznany.
+static BOOL SpliceKit_buttonIsCheckbox(NSButton *btn) {
+    if ([[btn className] containsString:@"Checkbox"] || [btn allowsMixedState]) return YES;
+    id cell = [btn cell];
+    SEL typeSel = NSSelectorFromString(@"_buttonType");
+    if ([cell respondsToSelector:typeSel]) {
+        NSUInteger type = ((NSUInteger (*)(id, SEL))objc_msgSend)(cell, typeSel);
+        return type == NSButtonTypeSwitch;
+    }
+    return NO;
+}
+
+// mikagosz: widoki danej klasy w oknie — wszerz, bez rekurencyjnego bloku. Poprzednie wersje
+// w dialog.popup / dialog.checkbox wołały blok przez __weak, który był już nil →
+// EXC_BAD_ACCESS 0x10 i upadek FCP (dialog.popup, zmierzone 2026-09-27 23:47).
+static NSArray *SpliceKit_findViewsOfClass(NSView *root, Class cls, BOOL (^filter)(NSView *)) {
+    NSMutableArray *found = [NSMutableArray array];
+    if (!root) return found;
+    NSMutableArray<NSView *> *queue = [NSMutableArray arrayWithObject:root];
+    NSUInteger visited = 0;
+    while (queue.count > 0 && visited < 2000) {
+        NSView *current = queue[0];
+        [queue removeObjectAtIndex:0];
+        visited++;
+        @try {
+            if ([current isKindOfClass:cls] && (!filter || filter(current))) [found addObject:current];
+            NSArray *subs = SpliceKit_safeSubviews(current);
+            if (subs) [queue addObjectsFromArray:subs];
+        } @catch (NSException *e) {}
+    }
+    return found;
+}
+
+// mikagosz: okno dialogowe tak jak w dialog.click — modalne > arkusz > widoczny panel FF/LK/Alert
+// (okno Duplicate Project As… to LKPanel, niemodalne).
+static NSWindow *SpliceKit_findDialogWindow(void) {
+    NSWindow *dialogWindow = [NSApp modalWindow];
+    if (dialogWindow) return dialogWindow;
+    for (NSWindow *window in [NSApp windows]) {
+        NSWindow *sheet = [window attachedSheet];
+        if (sheet) return sheet;
+    }
+    for (NSWindow *window in [NSApp windows]) {
+        if (![window isVisible] || ![window isKindOfClass:[NSPanel class]] || [window isSheet]) continue;
+        NSString *className = NSStringFromClass([window class]);
+        if ([className hasPrefix:@"FF"] || [className hasPrefix:@"LK"] || [className containsString:@"Alert"])
+            return window;
+    }
+    return nil;
+}
+
 static void SpliceKit_collectUIElements(NSView *view, NSMutableArray *buttons,
                                          NSMutableArray *textFields, NSMutableArray *labels,
                                          NSMutableArray *checkboxes, NSMutableArray *popups,
@@ -20854,11 +20949,30 @@ static void SpliceKit_collectUIElements(NSView *view, NSMutableArray *buttons,
     for (NSView *subview in subviews) {
         if (!subview) continue;
         @try {
-        if ([subview isKindOfClass:[NSButton class]]) {
+        // mikagosz: NSPopUpButton to podklasa NSButton — musi iść przed gałęzią przycisków,
+        // inaczej listy lądowały w „buttons”, a „popups” było zawsze puste.
+        if ([subview isKindOfClass:[NSPopUpButton class]]) {
+            NSPopUpButton *popup = (NSPopUpButton *)subview;
+            NSMutableArray *items = [NSMutableArray array];
+            for (NSMenuItem *item in [popup itemArray]) {
+                if (![item isSeparatorItem]) {
+                    [items addObject:@{
+                        @"title": [item title] ?: @"",
+                        @"selected": @([popup selectedItem] == item)
+                    }];
+                }
+            }
+            [popups addObject:@{
+                @"selectedTitle": [[popup titleOfSelectedItem] ?: @"" copy],
+                @"items": items,
+                @"enabled": @([popup isEnabled]),
+                @"tag": @([popup tag])
+            }];
+        } else if ([subview isKindOfClass:[NSButton class]]) {
             NSButton *btn = (NSButton *)subview;
             NSString *title = [btn title] ?: @"";
             NSInteger bezelStyle = [btn bezelStyle];
-            BOOL isCheckbox = ([[btn className] containsString:@"Checkbox"] || [btn allowsMixedState]);
+            BOOL isCheckbox = SpliceKit_buttonIsCheckbox(btn);
             if (isCheckbox) {
                 [checkboxes addObject:@{
                     @"title": title,
@@ -20893,22 +21007,6 @@ static void SpliceKit_collectUIElements(NSView *view, NSMutableArray *buttons,
                     }];
                 }
             }
-        } else if ([subview isKindOfClass:[NSPopUpButton class]]) {
-            NSPopUpButton *popup = (NSPopUpButton *)subview;
-            NSMutableArray *items = [NSMutableArray array];
-            for (NSMenuItem *item in [popup itemArray]) {
-                if (![item isSeparatorItem]) {
-                    [items addObject:@{
-                        @"title": [item title] ?: @"",
-                        @"selected": @([popup selectedItem] == item)
-                    }];
-                }
-            }
-            [popups addObject:@{
-                @"selectedTitle": [[popup titleOfSelectedItem] ?: @"" copy],
-                @"items": items,
-                @"tag": @([popup tag])
-            }];
         } else if ([subview isKindOfClass:[NSSegmentedControl class]]) {
             NSSegmentedControl *seg = (NSSegmentedControl *)subview;
             NSMutableArray *segments = [NSMutableArray array];
@@ -21266,36 +21364,15 @@ static NSDictionary *SpliceKit_handleDialogCheckbox(NSDictionary *params) {
     __block NSDictionary *result = nil;
     SpliceKit_executeOnMainThread(^{
         @try {
-            NSWindow *dialogWindow = [NSApp modalWindow];
-            if (!dialogWindow) {
-                for (NSWindow *window in [NSApp windows]) {
-                    NSWindow *sheet = [window attachedSheet];
-                    if (sheet) { dialogWindow = sheet; break; }
-                }
-            }
+            NSWindow *dialogWindow = SpliceKit_findDialogWindow();
             if (!dialogWindow) { result = @{@"error": @"No dialog found"}; return; }
 
-            __block NSButton *targetCB = nil;
-            __block void (^findCB)(NSView *);
-            __weak void (^weakCB)(NSView *);
-            weakCB = findCB = ^(NSView *view) {
-                if (!view) return;
-                NSArray *subs = SpliceKit_safeSubviews(view);
-                if (!subs) return;
-                for (NSView *subview in subs) {
-                    if (!subview) continue;
-                    if ([subview isKindOfClass:[NSButton class]]) {
-                        NSButton *btn = (NSButton *)subview;
-                        if (([[btn className] containsString:@"Checkbox"] || [btn allowsMixedState]) &&
-                            [[btn title] localizedCaseInsensitiveContainsString:checkboxTitle]) {
-                            targetCB = btn;
-                            return;
-                        }
-                    }
-                    if (!targetCB) weakCB(subview);
-                }
-            };
-            findCB([dialogWindow contentView]);
+            NSArray *cbs = SpliceKit_findViewsOfClass([dialogWindow contentView], [NSButton class], ^BOOL(NSView *v) {
+                NSButton *btn = (NSButton *)v;
+                return ![btn isKindOfClass:[NSPopUpButton class]] && SpliceKit_buttonIsCheckbox(btn) &&
+                       [[btn title] localizedCaseInsensitiveContainsString:checkboxTitle];
+            });
+            NSButton *targetCB = cbs.firstObject;
 
             if (!targetCB) {
                 result = @{@"error": [NSString stringWithFormat:@"Checkbox '%@' not found", checkboxTitle]};
@@ -21325,31 +21402,10 @@ static NSDictionary *SpliceKit_handleDialogPopup(NSDictionary *params) {
     __block NSDictionary *result = nil;
     SpliceKit_executeOnMainThread(^{
         @try {
-            NSWindow *dialogWindow = [NSApp modalWindow];
-            if (!dialogWindow) {
-                for (NSWindow *window in [NSApp windows]) {
-                    NSWindow *sheet = [window attachedSheet];
-                    if (sheet) { dialogWindow = sheet; break; }
-                }
-            }
+            NSWindow *dialogWindow = SpliceKit_findDialogWindow();
             if (!dialogWindow) { result = @{@"error": @"No dialog found"}; return; }
 
-            NSMutableArray *popups = [NSMutableArray array];
-            __block void (^findPopups)(NSView *);
-            __weak void (^weakPU)(NSView *);
-            weakPU = findPopups = ^(NSView *view) {
-                if (!view) return;
-                NSArray *subs = SpliceKit_safeSubviews(view);
-                if (!subs) return;
-                for (NSView *subview in subs) {
-                    if (!subview) continue;
-                    if ([subview isKindOfClass:[NSPopUpButton class]]) {
-                        [popups addObject:subview];
-                    }
-                    weakPU(subview);
-                }
-            };
-            findPopups([dialogWindow contentView]);
+            NSArray *popups = SpliceKit_findViewsOfClass([dialogWindow contentView], [NSPopUpButton class], nil);
 
             NSInteger idx = [popupIndex integerValue];
             if (idx >= 0 && idx < (NSInteger)popups.count) {
