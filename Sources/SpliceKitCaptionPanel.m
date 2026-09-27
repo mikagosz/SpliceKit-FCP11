@@ -3944,6 +3944,23 @@ static id SpliceKitCaption_currentSequence(void) {
 static void SpliceKitCaption_deleteSequence(id sequence) {
     if (!sequence) return;
     @try {
+        // mikagosz: 11.2 — FFAnchoredSequence nie ma containerEvent / event / moveToTrash:,
+        // więc stara droga cicho nic nie robiła i „SpliceKit Caption Import NNNN” zostawał
+        // w bibliotece. Projekt to FFSequenceRecord (targetSequenceRecord), a do kosza
+        // przenosi go biblioteka — ta sama akcja co Move to Trash (sprawdzone 2026-09-27).
+        SEL recordSel = NSSelectorFromString(@"targetSequenceRecord");
+        SEL trashActionSel = NSSelectorFromString(@"actionMoveLibraryItemToTrash:actionName:error:");
+        id record = [sequence respondsToSelector:recordSel]
+            ? ((id (*)(id, SEL))objc_msgSend)(sequence, recordSel) : nil;
+        id library = [record respondsToSelector:@selector(library)]
+            ? ((id (*)(id, SEL))objc_msgSend)(record, @selector(library)) : nil;
+        if (record && [library respondsToSelector:trashActionSel]) {
+            NSError *error = nil;
+            BOOL ok = ((BOOL (*)(id, SEL, id, id, NSError **))objc_msgSend)(
+                library, trashActionSel, record, @"Remove Caption Import Project", &error);
+            if (ok) return;
+            SpliceKit_log(@"[Captions] Warning: could not trash temp project: %@", error.localizedDescription);
+        }
         SEL containerEventSel = NSSelectorFromString(@"containerEvent");
         SEL eventSel = NSSelectorFromString(@"event");
         id event = nil;
@@ -5387,7 +5404,9 @@ static BOOL SpliceKitCaption_pollMainThread(BOOL (^condition)(void), double time
 
     NSUInteger captionCount = 0;
     for (SpliceKitCaptionSegment *seg in self.mutableSegments) {
-        NSString *text = self.style.allCaps ? [seg.text uppercaseString] : seg.text;
+        // mikagosz: natywne napisy to tekst, nie grafika — bez ALL CAPS ze stylu tytułów
+        // (domyślny „Bold Pop” zamieniał całe napisy na wielkie litery)
+        NSString *text = seg.text;
         if (text.length == 0) continue;
 
         NSString *offsetStr = SpliceKitCaption_durRational(seg.startTime, fdN, fdD);
@@ -5532,21 +5551,39 @@ static BOOL SpliceKitCaption_pollMainThread(BOOL (^condition)(void), double time
 
     [NSThread sleepForTimeInterval:0.5];
 
+    // mikagosz: tymczasowy projekt do kosza PRZED wklejeniem — wtedy jedno undo zdejmuje
+    // napisy, a nie przywraca tymczasowego projektu (schowek ma już skopiowane napisy).
+    SpliceKit_executeOnMainThread(^{
+        id tempToDelete = SpliceKitCaption_findSequenceByPrefix(tempName);
+        if (tempToDelete) SpliceKitCaption_deleteSequence(tempToDelete);
+    });
+
     // Paste captions onto user's timeline
     SpliceKit_executeOnMainThread(^{
         [NSApp sendAction:NSSelectorFromString(@"deselectAll:") to:nil from:nil];
     });
     [NSThread sleepForTimeInterval:0.2];
+    // mikagosz: paste: wkleja od głowicy, a czasy napisów są od początku projektu. Było:
+    // głowica na 9,33 s → pierwszy napis na 9,40 zamiast 0,08 i doklejony gap 8,7 s
+    // (zmierzone 2026-09-27). Głowica na 0 na czas wklejenia, potem z powrotem.
     SpliceKit_executeOnMainThread(^{
+        id tm = SpliceKit_getActiveTimelineModule();
+        SEL getSel = NSSelectorFromString(@"playheadTime");
+        SEL setSel = NSSelectorFromString(@"setPlayheadTime:");
+        BOOL canSeek = tm && [tm respondsToSelector:getSel] && [tm respondsToSelector:setSel];
+        SpliceKitCaption_CMTime saved = {0};
+        if (canSeek) {
+            saved = ((SpliceKitCaption_CMTime (*)(id, SEL))STRET_MSG)(tm, getSel);
+            SpliceKitCaption_CMTime zero = {.value = 0, .timescale = saved.timescale > 0 ? saved.timescale : 600,
+                                             .flags = 1, .epoch = 0};
+            ((void (*)(id, SEL, SpliceKitCaption_CMTime))objc_msgSend)(tm, setSel, zero);
+        }
         [NSApp sendAction:NSSelectorFromString(@"paste:") to:nil from:nil];
+        if (canSeek && (saved.flags & 1)) {
+            ((void (*)(id, SEL, SpliceKitCaption_CMTime))objc_msgSend)(tm, setSel, saved);
+        }
     });
     [NSThread sleepForTimeInterval:0.5];
-
-    // Clean up temp project
-    SpliceKit_executeOnMainThread(^{
-        id tempToDelete = SpliceKitCaption_findSequenceByPrefix(tempName);
-        if (tempToDelete) SpliceKitCaption_deleteSequence(tempToDelete);
-    });
 
     SpliceKit_log(@"[NativeCaptions] Done: %lu captions via FCPXML import+paste", (unsigned long)captionCount);
 
@@ -5576,7 +5613,7 @@ static BOOL SpliceKitCaption_pollMainThread(BOOL (^condition)(void), double time
     NSUInteger srtIndex = 1;
     for (NSUInteger i = 0; i < self.mutableSegments.count; i++) {
         SpliceKitCaptionSegment *seg = self.mutableSegments[i];
-        NSString *text = self.style.allCaps ? [seg.text uppercaseString] : seg.text;
+        NSString *text = seg.text;  // mikagosz: SRT z oryginalnym tekstem, bez ALL CAPS ze stylu tytułów
         // Skip empty segments
         NSString *trimmed = [text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
         if (trimmed.length == 0) continue;
@@ -5617,10 +5654,12 @@ static BOOL SpliceKitCaption_pollMainThread(BOOL (^condition)(void), double time
 }
 
 - (NSString *)srtTimestamp:(double)seconds {
-    int h = (int)(seconds / 3600);
-    int m = (int)(fmod(seconds, 3600) / 60);
-    int s = (int)fmod(seconds, 60);
-    int ms = (int)((seconds - floor(seconds)) * 1000);
+    // mikagosz: całe milisekundy zaokrąglone, nie obcięte (0,0799999 s dawało „,079”)
+    long long totalMs = llround(MAX(seconds, 0) * 1000.0);
+    int h = (int)(totalMs / 3600000);
+    int m = (int)((totalMs / 60000) % 60);
+    int s = (int)((totalMs / 1000) % 60);
+    int ms = (int)(totalMs % 1000);
     return [NSString stringWithFormat:@"%02d:%02d:%02d,%03d", h, m, s, ms];
 }
 

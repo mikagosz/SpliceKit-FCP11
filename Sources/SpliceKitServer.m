@@ -7362,9 +7362,13 @@ static NSDictionary *SpliceKit_handleCaptionsGenerate(NSDictionary *params) {
     return @{@"status": @"ok", @"message": @"Caption generation started. Check captions.getState for results."};
 }
 
+static NSDictionary *SpliceKit_syncCaptionWordsFromTranscript(void);
+
 static NSDictionary *SpliceKit_handleCaptionsExportSRT(NSDictionary *params) {
     NSString *path = params[@"path"];
     if (!path) return @{@"error": @"path parameter required"};
+    NSDictionary *syncError = SpliceKit_syncCaptionWordsFromTranscript();
+    if (syncError) return syncError;
     return [[SpliceKitCaptionPanel sharedPanel] exportSRT:path];
 }
 
@@ -7613,7 +7617,39 @@ static NSDictionary *SpliceKit_handleCaptionsCleanup(NSDictionary *params) {
 
 #pragma mark - Native Captions (FFAnchoredCaption)
 
+// mikagosz: słowa napisów z BIEŻĄCEJ transkrypcji. Panel napisów trzymał własną kopię,
+// wczytaną raz z zapisu — po undo albo ponownej transkrypcji mógł robić napisy ze starych
+// czasów. Gdy transkrypcja jest, ale nie pasuje do osi czasu → błąd (jak 091f405).
+// Bez transkrypcji: słowa panelu napisów jak dotąd (captions.open / captions.setWords).
+static NSDictionary *SpliceKit_syncCaptionWordsFromTranscript(void) {
+    SpliceKitTranscriptPanel *tp = [SpliceKitTranscriptPanel sharedPanel];
+    NSDictionary *state = [tp getState];
+    if (![state[@"status"] isEqualToString:@"ready"] || [state[@"wordCount"] integerValue] == 0) return nil;
+    if (![state[@"matchesTimeline"] boolValue]) {
+        return @{@"error": @"The transcript no longer matches the timeline (it changed after transcription — "
+                           @"e.g. undo or a manual edit), so caption times would be wrong. "
+                           @"Re-open it with open_transcript(force_retranscribe=True) first.",
+                 @"stale": @YES};
+    }
+    NSMutableArray *dicts = [NSMutableArray array];
+    for (SpliceKitTranscriptWord *w in tp.words) {
+        NSMutableDictionary *d = [@{@"text": w.text ?: @"", @"startTime": @(w.startTime),
+                                    @"endTime": @(w.endTime), @"duration": @(w.duration),
+                                    @"confidence": @(w.confidence), @"speaker": w.speaker ?: @"Unknown",
+                                    @"clipTimelineStart": @(w.clipTimelineStart),
+                                    @"sourceMediaOffset": @(w.sourceMediaOffset),
+                                    @"sourceMediaTime": @(w.sourceMediaTime)} mutableCopy];
+        if (w.clipHandle) d[@"clipHandle"] = w.clipHandle;
+        if (w.sourceMediaPath) d[@"sourceMediaPath"] = w.sourceMediaPath;
+        [dicts addObject:d];
+    }
+    [[SpliceKitCaptionPanel sharedPanel] setWordsManually:dicts];
+    return nil;
+}
+
 static NSDictionary *SpliceKit_handleNativeCaptionsGenerate(NSDictionary *params) {
+    NSDictionary *syncError = SpliceKit_syncCaptionWordsFromTranscript();
+    if (syncError) return syncError;
     SpliceKitCaptionPanel *panel = [SpliceKitCaptionPanel sharedPanel];
 
     // Apply grouping mode if specified

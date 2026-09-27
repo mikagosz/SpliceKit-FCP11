@@ -6946,7 +6946,8 @@ def export_captions_srt(path: str) -> str:
     Args:
         path: Output file path (e.g. "/Users/you/Desktop/captions.srt")
 
-    Requires captions to have been transcribed first.
+    Uses the current transcript (open_transcript()); errors if it no longer matches
+    the timeline. Text as-is, times rounded to whole milliseconds.
     """
     r = bridge.call("captions.exportSRT", path=path)
     if _err(r):
@@ -7009,7 +7010,11 @@ def generate_native_captions(grouping: str = "word", language: str = "en",
     The key feature: words appear one at a time (one caption per word),
     using precise word-level timing from Parakeet transcription.
 
-    Requires words to be loaded first via open_captions() or set_caption_words().
+    Words come from the current transcript (open_transcript()); if the transcript no
+    longer matches the timeline (e.g. after undo) this returns an error — re-open it with
+    force_retranscribe=True. Captions are placed from the start of the project (0 s),
+    whatever the playhead position, with the transcript text as-is (no ALL CAPS).
+    One undo removes them.
 
     Args:
         grouping: How to group words into captions.
