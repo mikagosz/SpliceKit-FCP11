@@ -14808,6 +14808,7 @@ NSDictionary *SpliceKit_handleMenuExecute(NSDictionary *params) {
 
     BOOL dryRun = [params[@"dry_run"] boolValue];
 
+    __block dispatch_block_t runAction = nil;
     __block NSDictionary *result = nil;
     SpliceKit_executeOnMainThread(^{
         @try {
@@ -14940,14 +14941,18 @@ NSDictionary *SpliceKit_handleMenuExecute(NSDictionary *params) {
             }
 
             // Execute the menu item's action
+            // mikagosz: akcja asynchronicznie — pozycja otwierająca okno modalne (File > Share > …)
+            // trzymała ten blok do limitu 20 s. Wynik po wykonaniu albo po wykryciu okna niżej.
             if (action) {
-                if (target) {
-                    ((void (*)(id, SEL, id))objc_msgSend)(target, action, targetItem);
-                } else {
-                    // Send through responder chain
-                    ((BOOL (*)(id, SEL, SEL, id, id))objc_msgSend)(
-                        app, @selector(sendAction:to:from:), action, nil, targetItem);
-                }
+                runAction = ^{
+                    if (target) {
+                        ((void (*)(id, SEL, id))objc_msgSend)(target, action, targetItem);
+                    } else {
+                        // Send through responder chain
+                        ((BOOL (*)(id, SEL, SEL, id, id))objc_msgSend)(
+                            app, @selector(sendAction:to:from:), action, nil, targetItem);
+                    }
+                };
                 result = @{@"status": @"ok", @"menuItem": itemTitle ?: @"",
                           @"action": NSStringFromSelector(action)};
             } else {
@@ -14957,9 +14962,38 @@ NSDictionary *SpliceKit_handleMenuExecute(NSDictionary *params) {
             result = @{@"error": [NSString stringWithFormat:@"Exception: %@", e.reason]};
         }
     });
-    if (!result && SpliceKit_lastMainThreadDispatchTimedOut()) {
-        // mikagosz: pozycja otworzyła okno modalne (np. „Apple Devices 1080p…”) — blok stoi
-        // w oknie. Było: fałszywe „Menu execute failed” po 20 s przy otwartym oknie.
+    if (runAction && result[@"status"] && [NSThread isMainThread]) {
+        runAction();  // z wątku głównego (paleta poleceń, Lua) — czekanie z uśpieniem zablokowałoby FCP
+        return result;
+    }
+    if (runAction && result[@"status"]) {
+        __block BOOL done = NO;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            @try { runAction(); } @catch (NSException *e) {
+                SpliceKit_log(@"[Menu] Exception in %@: %@", result[@"action"], e.reason);
+            }
+            done = YES;
+        });
+        // Co 100 ms: skończyła się akcja? otwarte okno modalne albo arkusz? Bloki
+        // executeOnMainThread działają też w pętli okna modalnego (kCFRunLoopCommonModes).
+        for (int i = 0; i < 200; i++) {
+            [NSThread sleepForTimeInterval:0.1];
+            __block BOOL finished = NO, modal = NO;
+            SpliceKit_executeOnMainThread(^{
+                finished = done;
+                modal = NSApp.modalWindow != nil;
+                for (NSWindow *w in NSApp.windows) if (w.attachedSheet) modal = YES;
+            });
+            if (finished) return result;
+            if (modal) {
+                NSMutableDictionary *r = [result mutableCopy];
+                r[@"modal"] = @YES;
+                r[@"menuPath"] = menuPath;
+                r[@"note"] = @"The menu item opened a dialog. Use detect_dialog / click_dialog_button / dismiss_dialog.";
+                return r;
+            }
+        }
+        // mikagosz: ani koniec, ani okno po 20 s — długa operacja albo okno spoza NSApp.modalWindow
         return @{@"status": @"ok", @"modal": @YES, @"menuPath": menuPath,
                  @"note": @"FCP's main thread stayed busy for 20 s — the menu item most likely opened a modal dialog. "
                           @"Use detect_dialog / click_dialog_button / dismiss_dialog."};
@@ -19769,6 +19803,19 @@ static NSDictionary *SpliceKit_handleShareExport(NSDictionary *params) {
         // Try to use specific share destination via menu
         return SpliceKit_handleMenuExecute(@{@"menuPath": @[@"File", @"Share", destination]});
     } else {
+        // mikagosz: domyślny cel przez pozycję menu z dopiskiem „(default)” — ta sama droga co cel
+        // po nazwie, więc okno modalne zgłasza się od razu (wywołanie wprost czekało 20 s na limit).
+        __block NSString *defaultTitle = nil;
+        SpliceKit_executeOnMainThread(^{
+            NSMenuItem *file = [[NSApp mainMenu] itemWithTitle:@"File"];
+            NSMenuItem *share = [file.submenu itemWithTitle:@"Share"];
+            for (NSMenuItem *it in share.submenu.itemArray) {
+                if ([it.title rangeOfString:@"(default)"].location != NSNotFound) { defaultTitle = it.title; break; }
+            }
+        });
+        if (defaultTitle.length) {
+            return SpliceKit_handleMenuExecute(@{@"menuPath": @[@"File", @"Share", defaultTitle]});
+        }
         // Use default share
         // mikagosz: shareDefaultDestination: nie ma w 11.2 żaden obiekt; menu File > Share >
         // Export File (default)… to shareToDefaultDestination: na osi czasu (FFShareHelper).

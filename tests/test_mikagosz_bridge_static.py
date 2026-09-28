@@ -102,6 +102,16 @@ class ShareTests(unittest.TestCase):
         b = body(SERVER, "static NSDictionary *SpliceKit_handleShareExport(")
         self.assertTrue(re.search(r'hasPrefix:@"add destination"', b))
 
+    def test_menu_execute_detects_modal_without_timeout(self):
+        b = body(SERVER, "NSDictionary *SpliceKit_handleMenuExecute(NSDictionary *params) {")
+        self.assertIn("dispatch_async(dispatch_get_main_queue()", b)
+        self.assertIn("NSApp.modalWindow != nil", b)
+        self.assertIn("[NSThread isMainThread]", b)
+
+    def test_default_destination_goes_through_menu(self):
+        b = body(SERVER, "static NSDictionary *SpliceKit_handleShareExport(")
+        self.assertLess(b.index('@"(default)"'), b.index('"shareToDefaultDestination:"'))
+
 
 if __name__ == "__main__":
     unittest.main()
