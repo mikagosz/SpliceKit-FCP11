@@ -82,6 +82,12 @@ class EffectEnableTests(unittest.TestCase):
         self.assertIn('@"effects.setEnabled"', SERVER)
 
 
+class SelectionStateTests(unittest.TestCase):
+    def test_detailed_state_lists_whole_selection(self):
+        b = body(SERVER, "NSDictionary *SpliceKit_handleTimelineGetDetailedState(")
+        self.assertIn('state[@"selectedItems"] = selList;', b)
+
+
 class ShareTests(unittest.TestCase):
     def test_add_destination_is_refused(self):
         b = body(SERVER, "static NSDictionary *SpliceKit_handleShareExport(")

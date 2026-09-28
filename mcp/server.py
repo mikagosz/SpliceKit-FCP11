@@ -1256,11 +1256,15 @@ def get_timeline_clips(limit: int = 100) -> str:
 
 @mcp.tool(annotations=_tool_annotations("get_selected_clips"))
 def get_selected_clips() -> str:
-    """Get only the currently selected clips in the timeline."""
+    """Get the currently selected clips in the timeline — primary storyline and connected
+    clips (lane > 0 above, < 0 below), with name, lane, start/end seconds and handle."""
     r = bridge.call("timeline.getDetailedState")
     if _err(r):
         return f"Error: {r.get('error', r)}"
-    items = [i for i in r.get("items", []) if i.get("selected")]
+    # mikagosz: selectedItems = pełne zaznaczenie FCP (z podpiętymi); items to tylko główna ścieżka
+    items = r.get("selectedItems")
+    if items is None:
+        items = [i for i in r.get("items", []) if i.get("selected")]
     if not items:
         return "No clips selected"
     return _fmt({"selectedCount": len(items), "items": items})

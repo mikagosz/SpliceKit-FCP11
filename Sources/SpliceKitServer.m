@@ -212,6 +212,9 @@ NSDictionary *SpliceKit_listHandles(void) {
 
 typedef struct { int64_t value; int32_t timescale; uint32_t flags; int64_t epoch; } SpliceKit_CMTime;
 typedef struct { SpliceKit_CMTime start; SpliceKit_CMTime duration; } SpliceKit_CMTimeRange;
+// mikagosz: używane wyżej niż definicje
+static double SpliceKit_secondsFromTime(SpliceKit_CMTime t);
+static BOOL SpliceKit_tryReadTimelineRange(id primaryObj, id item, SpliceKit_CMTimeRange *outRange);
 
 static SpliceKit_CMTimeRange SpliceKit_clipRangeForItem(id item);
 static SpliceKit_CMTime SpliceKit_buildCMTime(double seconds, id timeline);
@@ -1352,6 +1355,34 @@ NSDictionary *SpliceKit_handleTimelineGetDetailedState(NSDictionary *params) {
                     }
                     state[@"items"] = itemList;
                 }
+            }
+
+            // mikagosz: pełne zaznaczenie FCP, także klipy podpięte i napisy — items to tylko główna
+            // ścieżka, więc get_selected_clips nie widział klipu zaznaczonego na pasie 1 (2026-09-28).
+            if (selectedSet.count) {
+                NSMutableArray *selList = [NSMutableArray array];
+                for (id item in selectedSet) {
+                    NSMutableDictionary *si = [NSMutableDictionary dictionary];
+                    si[@"class"] = NSStringFromClass([item class]);
+                    if ([item respondsToSelector:@selector(displayName)])
+                        si[@"name"] = ((id (*)(id, SEL))objc_msgSend)(item, @selector(displayName)) ?: @"";
+                    if ([item respondsToSelector:@selector(anchoredLane)])
+                        si[@"lane"] = @(((long long (*)(id, SEL))objc_msgSend)(item, @selector(anchoredLane)));
+                    SpliceKit_CMTimeRange r;
+                    if (SpliceKit_tryReadTimelineRange(primaryObj, item, &r)) {
+                        si[@"startTime"] = SpliceKit_serializeCMTime(r.start);
+                        si[@"duration"] = SpliceKit_serializeCMTime(r.duration);
+                        si[@"start"] = @(SpliceKit_secondsFromTime(r.start));
+                        si[@"end"] = @(SpliceKit_secondsFromTime(r.start) + SpliceKit_secondsFromTime(r.duration));
+                    }
+                    si[@"handle"] = SpliceKit_storeHandle(item);
+                    [selList addObject:si];
+                }
+                [selList sortUsingComparator:^NSComparisonResult(NSDictionary *x, NSDictionary *y) {
+                    NSComparisonResult c = [(x[@"start"] ?: @0) compare:(y[@"start"] ?: @0)];
+                    return c != NSOrderedSame ? c : [(x[@"lane"] ?: @0) compare:(y[@"lane"] ?: @0)];
+                }];
+                state[@"selectedItems"] = selList;
             }
 
             // Frame rate from sequence
