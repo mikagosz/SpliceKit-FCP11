@@ -52,5 +52,15 @@ class BrowserTrashTests(unittest.TestCase):
         self.assertIn("return SpliceKit_browserClipIsTrashed(obj);", DIAG)
 
 
+class SeekGuardTests(unittest.TestCase):
+    def test_open_marks_time_and_seek_reapplies(self):
+        self.assertIn("SpliceKit_lastProjectOpen = CFAbsoluteTimeGetCurrent();",
+                      body(SERVER, "NSDictionary *SpliceKit_handleProjectOpen("))
+        seek = body(SERVER, "NSDictionary *SpliceKit_handlePlaybackSeek(")
+        self.assertIn("SpliceKit_seekNeedsGuard()", seek)
+        self.assertIn('r[@"reapplied"]', seek)
+        self.assertIn("frameSecs / 2.0", seek)
+
+
 if __name__ == "__main__":
     unittest.main()

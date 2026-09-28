@@ -4702,6 +4702,31 @@ NSDictionary *SpliceKit_handlePlayback(NSDictionary *params) {
     return sent;
 }
 
+// mikagosz: tuż po starcie FCP pierwszy seek po project.open zwracał ok 9,5 s, a głowica
+// stała potem na 8,97 s — FCP asynchronicznie przywraca zapamiętaną pozycję projektu
+// (2026-09-28; przy kolejnych otwarciach się nie powtarza). W tym oknie seek chwilę pilnuje
+// głowicy i ustawia ją ponownie, gdy FCP ją przestawi.
+static CFAbsoluteTime SpliceKit_lastProjectOpen = 0;
+static const CFTimeInterval kSpliceKitSeekGuardAfterOpen = 10.0;
+static const CFTimeInterval kSpliceKitSeekGuardAfterLaunch = 60.0;
+
+static BOOL SpliceKit_seekNeedsGuard(void) {
+    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+    if (SpliceKit_lastProjectOpen > 0 && now - SpliceKit_lastProjectOpen < kSpliceKitSeekGuardAfterOpen) return YES;
+    NSTimeInterval up = [[NSProcessInfo processInfo] systemUptime];
+    static NSTimeInterval launchUptime = 0;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        struct kinfo_proc info; size_t len = sizeof(info);
+        int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PID, getpid()};
+        if (sysctl(mib, 4, &info, &len, NULL, 0) == 0) {
+            NSTimeInterval started = info.kp_proc.p_starttime.tv_sec + info.kp_proc.p_starttime.tv_usec / 1e6;
+            launchUptime = up - ([[NSDate date] timeIntervalSince1970] - started);
+        }
+    });
+    return launchUptime > 0 && up - launchUptime < kSpliceKitSeekGuardAfterLaunch;
+}
+
 NSDictionary *SpliceKit_handlePlaybackSeek(NSDictionary *params) {
     NSNumber *seconds = params[@"seconds"];
     if (!seconds) return @{@"error": @"seconds parameter required"};
@@ -4717,6 +4742,7 @@ NSDictionary *SpliceKit_handlePlaybackSeek(NSDictionary *params) {
 
             // Get the sequence timescale for accurate time construction
             int32_t timescale = 24000; // default
+            double frameSecs = 1.0 / 30.0;
             SEL seqSel = @selector(sequence);
             if ([timeline respondsToSelector:seqSel]) {
                 id sequence = ((id (*)(id, SEL))objc_msgSend)(timeline, seqSel);
@@ -4728,6 +4754,7 @@ NSDictionary *SpliceKit_handlePlaybackSeek(NSDictionary *params) {
                         SpliceKit_CMTime fd = ((SpliceKit_CMTime (*)(id, SEL))STRET_MSG)(
                             sequence, fdSel);
                         if (fd.timescale > 0) timescale = fd.timescale;
+                        if (fd.timescale > 0 && fd.value > 0) frameSecs = (double)fd.value / fd.timescale;
                     }
                 }
             }
@@ -4751,11 +4778,26 @@ NSDictionary *SpliceKit_handlePlaybackSeek(NSDictionary *params) {
             if ([timeline respondsToSelector:setSel]) {
                 ((void (*)(id, SEL, SpliceKit_CMTime))objc_msgSend)(
                     timeline, setSel, targetTime);
+                NSInteger reapplied = 0;
+                SEL phSel = NSSelectorFromString(@"playheadTime");
+                if (SpliceKit_seekNeedsGuard() && [timeline respondsToSelector:phSel]) {
+                    double tolerance = frameSecs / 2.0;
+                    for (int i = 0; i < 8; i++) {
+                        [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.125]];
+                        SpliceKit_CMTime now = ((SpliceKit_CMTime (*)(id, SEL))STRET_MSG)(timeline, phSel);
+                        double pos = now.timescale > 0 ? (double)now.value / now.timescale : -1;
+                        if (fabs(pos - secs) <= tolerance) continue;
+                        if (reapplied >= 3) break;
+                        ((void (*)(id, SEL, SpliceKit_CMTime))objc_msgSend)(timeline, setSel, targetTime);
+                        reapplied++;
+                    }
+                }
                 NSMutableDictionary *r = [@{
                     @"status": @"ok",
                     @"seconds": @(secs),
                     @"time": SpliceKit_serializeCMTime(targetTime),
                 } mutableCopy];
+                if (reapplied > 0) r[@"reapplied"] = @(reapplied);
                 if (secs != requested) {
                     r[@"requestedSeconds"] = @(requested);
                     r[@"clamped"] = @YES;
@@ -19886,6 +19928,7 @@ NSDictionary *SpliceKit_handleProjectOpen(NSDictionary *params) {
             }
 
             ((void (*)(id, SEL, id))objc_msgSend)(editorContainer, loadSel, foundSequence);
+            SpliceKit_lastProjectOpen = CFAbsoluteTimeGetCurrent();
 
             result = @{
                 @"status": @"ok",
