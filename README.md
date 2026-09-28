@@ -81,6 +81,20 @@ Any command not listed below as fixed should be treated as **unverified on 11.2*
    - **Inspector**: effect parameters live on the clip's container (`videoEffects`);
      reads and writes go there, scale in percent, non-numeric values refused.
    - `retimeReverse` → `retimeReverseClip:`; volume ±1 dB → `volumeUp:`/`volumeDown:`.
+   - **`playback_action("stop")` no longer quits Final Cut Pro.** An unmapped action name
+     was sent as a raw selector, and `stop:` reached `-[NSApplication stop:]`, which ends
+     the app's run loop — FCP closed itself on the next event, without a crash report.
+     `stop` / `pause` now map to `stopPlaying:`, and raw selectors that NSApplication
+     itself handles are refused for playback and timeline actions.
+   - **Selection**: `get_selected_clips` reports connected clips too (lane, start, end).
+   - **Transcript word moves** keep the clipboard — its contents are saved before the
+     internal Cut/Paste and put back after.
+   - **Menu commands that open a window** (`share_project`, any `File > Share` item)
+     report `modal: true` within a fraction of a second; before, they waited 20 s.
+   - **Viewer**: `histogram` / `vectorscope` / `waveform` open Video Scopes if needed and
+     pick that scope; a second `fullscreenViewer` leaves full screen.
+   - `addChannelEQ` adds the Channel EQ audio effect (11.2 has no menu command for it);
+     `addTodoMarker` adds a to-do marker.
 5. **New commands**
    - `diag.menuActions`, `diag.selectorImplementors` (MCP `diag_menu_actions`,
      `diag_selector_implementors`) — the menu with its selectors, and which classes
@@ -98,19 +112,14 @@ Any command not listed below as fixed should be treated as **unverified on 11.2*
    Blackmagic RAW SDK is not installed, `parakeet-transcriber` pinned to FluidAudio
    0.13.6 (0.13.7 changed the `transcribe` API).
 
-### Known on 11.2, not fixed yet
+### Not in Final Cut Pro 11.2
 
-- No menu command in 11.2 for: `addChannelEQ`, `addTodoMarker`, `enableBeatDetection`,
-  `beatDetectionGrid`, `toggleVerifyObjectAlignment`, `audioCurves`.
-- `histogram` / `vectorscope` / `waveform` return an error — 11.2 has one Video Scopes
-  panel (`videoScopes`), the scope type is picked inside it.
-- `get_selected_clips` lists only primary-storyline clips; a connected clip selected with
-  `select_clip_in_lane` is selected in Final Cut Pro but not reported there.
-- `fullscreenViewer` is "Play Full Screen" in 11.2 — it starts playback; leave it with
-  `exitFullscreenViewer` (a second `fullscreenViewer` does not exit).
-- Moving transcript words uses Cut/Paste, so it replaces the clipboard.
-- `share_project()` without a destination waits about 20 s before it reports the
-  Export File window as open.
+Beat detection (`enableBeatDetection`, `beatDetectionGrid`), object alignment
+verification (`toggleVerifyObjectAlignment`) and the Audio Curves view (`audioCurves`)
+do not exist in 11.2 — no menu item and no implementation in the app. These commands
+return an error saying so; for volume curves use `audioAnimation`.
+
+`fullscreenViewer` is "Play Full Screen" in 11.2, so it also starts playback.
 
 ### Left in the tree, unused
 
