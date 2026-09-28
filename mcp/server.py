@@ -3882,7 +3882,8 @@ def share_project(destination: str = "") -> str:
         destination: Share destination as in File > Share, without the trailing "…" or
                      "(default)" (FCP 11.2: "Export File", "Apple Devices 720p",
                      "Apple Devices 1080p", "Apple Devices 4K", "Social Platforms",
-                     "HEVC - High Efficiency Video"). Leave empty for the default destination.
+                     "HEVC - High Efficiency Video", "Apple Vision Pro (MV-HEVC)", plus any
+                     destination you added yourself). Leave empty for the default destination.
                      Every destination opens a dialog — the result then says modal=true;
                      use detect_dialog / click_dialog_button to continue or cancel.
     """

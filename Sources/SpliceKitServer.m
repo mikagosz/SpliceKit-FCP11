@@ -19729,6 +19729,12 @@ static NSDictionary *SpliceKit_handleShareExport(NSDictionary *params) {
     NSString *destination = params[@"destination"]; // optional: specific share destination
 
     if (destination) {
+        // mikagosz: „Add Destination…” stoi w tym samym podmenu, ale otwiera Ustawienia > Destinations
+        // (bez okna eksportu, bez modal) — to nie jest cel eksportu (2026-09-28).
+        if ([[destination lowercaseString] hasPrefix:@"add destination"]) {
+            return @{@"error": @"\"Add Destination\" is not an export destination — it opens Settings > Destinations. "
+                               @"Pass one of the destinations listed in File > Share."};
+        }
         // Try to use specific share destination via menu
         return SpliceKit_handleMenuExecute(@{@"menuPath": @[@"File", @"Share", destination]});
     } else {

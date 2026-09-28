@@ -73,5 +73,11 @@ class EffectEnableTests(unittest.TestCase):
         self.assertIn('@"effects.setEnabled"', SERVER)
 
 
+class ShareTests(unittest.TestCase):
+    def test_add_destination_is_refused(self):
+        b = body(SERVER, "static NSDictionary *SpliceKit_handleShareExport(")
+        self.assertTrue(re.search(r'hasPrefix:@"add destination"', b))
+
+
 if __name__ == "__main__":
     unittest.main()
