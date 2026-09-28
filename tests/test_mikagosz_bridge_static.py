@@ -13,6 +13,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 SERVER = (REPO / "Sources" / "SpliceKitServer.m").read_text(encoding="utf-8")
 DIAG = (REPO / "Sources" / "SpliceKitMikagoszDiag.m").read_text(encoding="utf-8")
+TRANSCRIPT = (REPO / "Sources" / "SpliceKitTranscriptPanel.m").read_text(encoding="utf-8")
 
 
 def body(source, signature):
@@ -86,6 +87,14 @@ class SelectionStateTests(unittest.TestCase):
     def test_detailed_state_lists_whole_selection(self):
         b = body(SERVER, "NSDictionary *SpliceKit_handleTimelineGetDetailedState(")
         self.assertIn('state[@"selectedItems"] = selList;', b)
+
+
+class ClipboardTests(unittest.TestCase):
+    def test_move_words_restores_clipboard(self):
+        b = TRANSCRIPT[TRANSCRIPT.index("- (NSDictionary *)moveWordsFromIndex:"):]
+        b = b[:b.index("\n}\n")]
+        self.assertLess(b.index("SpliceKitTranscript_snapshotPasteboard()"), b.index('@"cut:"'))
+        self.assertLess(b.index('@"paste:"'), b.index("SpliceKitTranscript_restorePasteboard("))
 
 
 class ShareTests(unittest.TestCase):

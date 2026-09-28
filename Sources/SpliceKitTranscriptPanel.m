@@ -4666,6 +4666,35 @@ static double CMTimeToSeconds(SpliceKitTranscript_CMTime t) {
 
 #pragma mark - Move Words (Drag to Reorder)
 
+// mikagosz: przenoszenie słów idzie przez Cut/Paste FCP i nadpisywało schowek użytkownika.
+// Kopia wszystkich elementów i typów schowka przed Cut, przywrócenie po Paste.
+static NSArray<NSDictionary<NSString *, NSData *> *> *SpliceKitTranscript_snapshotPasteboard(void) {
+    NSMutableArray *items = [NSMutableArray array];
+    for (NSPasteboardItem *item in [NSPasteboard generalPasteboard].pasteboardItems ?: @[]) {
+        NSMutableDictionary *d = [NSMutableDictionary dictionary];
+        for (NSPasteboardType type in item.types) {
+            NSData *data = [item dataForType:type];
+            if (data) d[type] = data;
+        }
+        [items addObject:d];
+    }
+    return items;
+}
+
+static void SpliceKitTranscript_restorePasteboard(NSArray<NSDictionary<NSString *, NSData *> *> *items) {
+    NSPasteboard *pb = [NSPasteboard generalPasteboard];
+    [pb clearContents];
+    NSMutableArray *restored = [NSMutableArray array];
+    for (NSDictionary<NSString *, NSData *> *d in items) {
+        NSPasteboardItem *item = [[NSPasteboardItem alloc] init];
+        [d enumerateKeysAndObjectsUsingBlock:^(NSString *type, NSData *data, BOOL *stop) {
+            [item setData:data forType:type];
+        }];
+        [restored addObject:item];
+    }
+    if (restored.count) [pb writeObjects:restored];
+}
+
 /// Moves a range of words to a new position in the timeline. The operation is:
 /// blade at source boundaries, cut the segment, seek to destination, paste.
 /// The destination time is adjusted if it's after the source (since cutting
@@ -4740,6 +4769,7 @@ static double CMTimeToSeconds(SpliceKitTranscript_CMTime t) {
             [NSThread sleepForTimeInterval:0.05];
 
             // Step 4: Cut
+            NSArray *savedPasteboard = SpliceKitTranscript_snapshotPasteboard();
             SEL cutSel = NSSelectorFromString(@"cut:");
             ((void (*)(id, SEL, id))objc_msgSend)(timeline, cutSel, nil);
             [NSThread sleepForTimeInterval:0.1];
@@ -4755,6 +4785,7 @@ static double CMTimeToSeconds(SpliceKitTranscript_CMTime t) {
             // Step 6: Paste
             SEL pasteSel = NSSelectorFromString(@"paste:");
             ((void (*)(id, SEL, id))objc_msgSend)(timeline, pasteSel, nil);
+            SpliceKitTranscript_restorePasteboard(savedPasteboard);
 
             result = @{@"status": @"ok",
                        @"movedWords": @(count),
