@@ -115,6 +115,16 @@ class MissingIn112Tests(unittest.TestCase):
         self.assertIn("'audioCurves' is not available", body(SERVER, "static NSDictionary *SpliceKit_handleViewToggle("))
 
 
+class PlaybackStopTests(unittest.TestCase):
+    def test_stop_never_reaches_nsapplication(self):
+        # „stop” szedł jako -[NSApplication stop:] i zamykał FCP (2026-09-28).
+        b = body(SERVER, "NSDictionary *SpliceKit_handlePlayback(NSDictionary *params) {")
+        self.assertIn('@"stop":             @"stopPlaying:"', b)
+        self.assertIn("[NSApplication instancesRespondToSelector:", b)
+        t = body(SERVER, "static NSDictionary *SpliceKit_handleTimelineActionImpl(NSDictionary *params) {")
+        self.assertIn("[NSApplication instancesRespondToSelector:", t)
+
+
 class ShareTests(unittest.TestCase):
     def test_add_destination_is_refused(self):
         b = body(SERVER, "static NSDictionary *SpliceKit_handleShareExport(")

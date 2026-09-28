@@ -3370,6 +3370,12 @@ static NSDictionary *SpliceKit_handleTimelineActionImpl(NSDictionary *params) {
         if (![selector hasSuffix:@":"]) {
             selector = [selector stringByAppendingString:@":"];
         }
+        // mikagosz: surowy selektor obsługiwany przez samo NSApplication (stop:, terminate:, hide:…)
+        // trafiłby do aplikacji — stop: kończył pętlę FCP i program się zamykał (2026-09-28).
+        if ([NSApplication instancesRespondToSelector:NSSelectorFromString(selector)]) {
+            return @{@"error": [NSString stringWithFormat:
+                @"'%@' is not a timeline action (it would go to the application itself).", action]};
+        }
     }
 
     // Paste gets special treatment: FCP's own paste: only knows about its native
@@ -4619,6 +4625,10 @@ NSDictionary *SpliceKit_handlePlayback(NSDictionary *params) {
         @"playInToOut":      @"playInToOut:",
         @"playReverse":      @"playReverse:",
         @"stopPlaying":      @"stopPlaying:",
+        // mikagosz: „stop” bez mapy szło surowo jako stop: → -[NSApplication stop:] kończył pętlę
+        // aplikacji i FCP zamykał się przy następnym zdarzeniu (2026-09-28, dwa razy, bez raportu).
+        @"stop":             @"stopPlaying:",
+        @"pause":            @"stopPlaying:",
         @"loop":             @"loop:",
         @"fastForward":      @"fastForward:",
         @"rewind":           @"rewind:",
@@ -4644,6 +4654,13 @@ NSDictionary *SpliceKit_handlePlayback(NSDictionary *params) {
         selector = action;
         if (![selector hasSuffix:@":"]) {
             selector = [selector stringByAppendingString:@":"];
+        }
+        // mikagosz: surowy selektor, który obsługuje samo NSApplication (stop:, terminate:, hide:…),
+        // w łańcuchu responderów trafia do aplikacji, nie do odtwarzacza — blokujemy.
+        if ([NSApplication instancesRespondToSelector:NSSelectorFromString(selector)]) {
+            return @{@"error": [NSString stringWithFormat:
+                @"'%@' is not a playback action (it would go to the application itself). Use one of: %@",
+                action, [[actionMap.allKeys sortedArrayUsingSelector:@selector(compare:)] componentsJoinedByString:@", "]]};
         }
     }
 
