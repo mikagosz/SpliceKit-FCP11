@@ -62,6 +62,15 @@ class SeekGuardTests(unittest.TestCase):
         self.assertIn("frameSecs / 2.0", seek)
 
 
+class SelectClipInLaneTests(unittest.TestCase):
+    def test_anchored_items_set_and_safe_duration(self):
+        # 11.2: anchoredItems to NSSet (warunek na NSArray dawał 0 kandydatów); duration nie istnieje.
+        b = body(SERVER, "static NSDictionary *SpliceKit_handleSelectClipAtPlayheadLane(")
+        self.assertIn("[anchored isKindOfClass:[NSSet class]]", b)
+        self.assertIn("hasDuration", b)
+        self.assertIn('NSSelectorFromString(@"clippedRange")', b)
+
+
 class EffectEnableTests(unittest.TestCase):
     def test_channel_change_order_like_fcp(self):
         # Samo setEnabled: zmienia model, ale nie render — kolejność jak w toggleAllColorCorrectionOff:.

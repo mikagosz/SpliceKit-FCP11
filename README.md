@@ -66,6 +66,9 @@ Any command not listed below as fixed should be treated as **unverified on 11.2*
      leftovers they turn into after a restart, like Final Cut Pro's own browser
      (`include_trashed=True` lists them). `browser_append_clip` by index or name uses the
      same list, so an index from `browser_list_clips` points at the same clip.
+   - **`select_clip_in_lane`** finds connected clips again (on 11.2 `anchoredItems` is a
+     set, so no candidate was ever found); when nothing is under the playhead the error
+     lists the clips in that lane with their time ranges.
    - **Seek right after opening a project**: just after Final Cut Pro started, the first
      `seek_to_time` after `open_project` reported 9.5 s while the playhead ended up at
      8.97 s. For a few seconds after opening a project (and in the first minute after
@@ -101,7 +104,8 @@ Any command not listed below as fixed should be treated as **unverified on 11.2*
   `beatDetectionGrid`, `toggleVerifyObjectAlignment`, `audioCurves`.
 - `histogram` / `vectorscope` / `waveform` return an error — 11.2 has one Video Scopes
   panel (`videoScopes`), the scope type is picked inside it.
-- `select_clip_in_lane(1)` can miss a connected clip that is under the playhead.
+- `get_selected_clips` lists only primary-storyline clips; a connected clip selected with
+  `select_clip_in_lane` is selected in Final Cut Pro but not reported there.
 - `fullscreenViewer` is "Play Full Screen" in 11.2 — it starts playback; leave it with
   `exitFullscreenViewer` (a second `fullscreenViewer` does not exit).
 - Moving transcript words uses Cut/Paste, so it replaces the clipboard.

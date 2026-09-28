@@ -20007,6 +20007,9 @@ static NSDictionary *SpliceKit_handleSelectClipAtPlayheadLane(NSDictionary *para
                     SEL anchoredSel = NSSelectorFromString(@"anchoredItems");
                     if ([item respondsToSelector:anchoredSel]) {
                         id anchored = ((id (*)(id, SEL))objc_msgSend)(item, anchoredSel);
+                        // mikagosz: w 11.2 anchoredItems to NSSet, nie NSArray — warunek na tablicę
+                        // odrzucał każdy podpięty klip („Found 0 candidates”, 2026-09-28).
+                        if ([anchored isKindOfClass:[NSSet class]]) anchored = [(NSSet *)anchored allObjects];
                         if (anchored && [anchored isKindOfClass:[NSArray class]]) {
                             for (id connected in (NSArray *)anchored) {
                                 long long lane = 0;
@@ -20051,10 +20054,17 @@ static NSDictionary *SpliceKit_handleSelectClipAtPlayheadLane(NSDictionary *para
                 }
 
                 // Fallback: check anchoredOffset for connected clips
+                // mikagosz: klipy 11.2 nie odpowiadają na duration — długość z clippedRange,
+                // a bez żadnej z nich pomijamy (wywołanie nieobsługiwanego selektora rzuca wyjątek).
                 SEL offsetSel = NSSelectorFromString(@"anchoredOffset");
-                if (!bestMatch && [item respondsToSelector:offsetSel]) {
+                SEL clippedSel = NSSelectorFromString(@"clippedRange");
+                BOOL hasDuration = [item respondsToSelector:@selector(duration)] || [item respondsToSelector:clippedSel];
+                if (!bestMatch && hasDuration && [item respondsToSelector:offsetSel]) {
                     SpliceKit_CMTime offset = ((SpliceKit_CMTime (*)(id, SEL))STRET_MSG)(item, offsetSel);
-                    SpliceKit_CMTime dur = ((SpliceKit_CMTime (*)(id, SEL))STRET_MSG)(item, @selector(duration));
+                    SpliceKit_CMTime dur = [item respondsToSelector:@selector(duration)]
+                        ? ((SpliceKit_CMTime (*)(id, SEL))STRET_MSG)(item, @selector(duration))
+                        : ((SpliceKit_CMTimeRange (*)(id, SEL))STRET_MSG)(item, clippedSel).duration;
+                    if (offset.timescale <= 0 || dur.timescale <= 0) continue;
                     double startSec = (double)offset.value / offset.timescale;
                     double durSec = (double)dur.value / dur.timescale;
                     double endSec = startSec + durSec;
@@ -20068,9 +20078,26 @@ static NSDictionary *SpliceKit_handleSelectClipAtPlayheadLane(NSDictionary *para
             }
 
             if (!bestMatch) {
+                // mikagosz: kandydaci z ich zakresami — żeby było widać, czemu nic nie pasuje
+                NSMutableArray *seen = [NSMutableArray array];
+                for (id item in candidates) {
+                    NSMutableDictionary *d = [NSMutableDictionary dictionary];
+                    id dn = [item respondsToSelector:@selector(displayName)] ? ((id (*)(id, SEL))objc_msgSend)(item, @selector(displayName)) : nil;
+                    d[@"name"] = dn ?: NSStringFromClass([item class]);
+                    SpliceKit_CMTimeRange r;
+                    NSString *span = @"?";
+                    if (SpliceKit_tryReadTimelineRange(primaryObj, item, &r)) {
+                        double st = SpliceKit_secondsFromTime(r.start);
+                        span = [NSString stringWithFormat:@"%.3f–%.3f s", st, st + SpliceKit_secondsFromTime(r.duration)];
+                    }
+                    [seen addObject:[NSString stringWithFormat:@"%@ (%@)", d[@"name"], span]];
+                }
+                // Błąd dochodzi do klienta tylko jako tekst — kandydaci w treści komunikatu.
                 result = @{@"error": [NSString stringWithFormat:
-                    @"No clip found at playhead in lane %lld. Found %lu candidates in that lane.",
-                    targetLane, (unsigned long)candidates.count]};
+                    @"No clip found at playhead (%.3f s) in lane %lld. Found %lu candidates in that lane%@%@",
+                    playhead.timescale > 0 ? (double)playhead.value / playhead.timescale : 0.0,
+                    targetLane, (unsigned long)candidates.count,
+                    seen.count ? @": " : @".", [seen componentsJoinedByString:@", "]]};
                 return;
             }
 
