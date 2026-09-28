@@ -575,9 +575,11 @@ static NSString *MKG_name(id obj) {
     return [n isKindOfClass:[NSString class]] ? n : nil;
 }
 
+extern BOOL SpliceKit_browserClipIsTrashed(id clip);
+
+// Wydarzenie ma isInTrash; projekt/klip (FFAnchoredSequence) nie — dla niego rekord albo skorupa.
 static BOOL MKG_inTrash(id obj) {
-    SEL s = NSSelectorFromString(@"isInTrash");
-    return [obj respondsToSelector:s] && ((BOOL (*)(id, SEL))objc_msgSend)(obj, s);
+    return SpliceKit_browserClipIsTrashed(obj);
 }
 
 static NSArray *MKG_allEvents(void) {

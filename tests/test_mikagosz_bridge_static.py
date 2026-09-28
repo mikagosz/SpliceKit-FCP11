@@ -31,5 +31,26 @@ class CaptionsVerifyTests(unittest.TestCase):
         self.assertIn('info[@"start"]', b)
 
 
+class BrowserTrashTests(unittest.TestCase):
+    def test_helper_checks_record_and_shell(self):
+        b = body(SERVER, "BOOL SpliceKit_browserClipIsTrashed(id clip)")
+        for needle in ("isInTrash", "targetSequenceRecord", "timescale <= 0"):
+            self.assertIn(needle, b)
+        # po restarcie skorupa ma primaryObject (pusty FFAnchoredClip) — nie może o tym decydować
+        self.assertNotIn('"primaryObject"', b)
+        # skorupa nie odpowiada na duration (2026-09-28) — długość z clippedRange
+        self.assertIn('"clippedRange"', b)
+
+    def test_list_place_and_select_share_the_filter(self):
+        listing = body(SERVER, "static NSDictionary *SpliceKit_handleBrowserListClips(")
+        self.assertIn("SpliceKit_browserClipIsTrashed(clip)", listing)
+        self.assertIn("includeTrashed", listing)
+        place = body(SERVER, "static NSDictionary *SpliceKit_handleBrowserPlaceClip(")
+        self.assertIn("SpliceKit_browserEventClips(event)", place)
+        self.assertIn("SpliceKit_browserClipIsTrashed(c)", place)
+        self.assertNotIn('NSSelectorFromString(@"ownedClips")', place)
+        self.assertIn("return SpliceKit_browserClipIsTrashed(obj);", DIAG)
+
+
 if __name__ == "__main__":
     unittest.main()

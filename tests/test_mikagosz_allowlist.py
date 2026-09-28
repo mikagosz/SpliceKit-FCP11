@@ -84,6 +84,8 @@ class AllowlistTests(unittest.TestCase):
             ("browser_select", {"names": [], "event": "durok"}, "browser.select", {"names": [], "event": "durok"}),
             ("browser_get_selection", {}, "browser.getSelection", {}),
             ("verify_native_captions", {}, "nativeCaptions.verify", {}),
+            ("browser_list_clips", {}, "browser.listClips", {}),
+            ("browser_list_clips", {"include_trashed": True}, "browser.listClips", {"includeTrashed": True}),
         ]
         for tool, args, method, params in cases:
             self.assertIn(tool, names)

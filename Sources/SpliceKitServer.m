@@ -13771,12 +13771,55 @@ static NSDictionary *SpliceKit_handleCommandAIAppleAgentic(NSDictionary *params)
 //
 
 // List clips available in the event browser
+// mikagosz: projekt przeniesiony do kosza biblioteki zostaje w displayOwnedClips wydarzenia —
+// albo z rekordem isInTrash, albo (po restarcie FCP) jako skorupa bez rekordu i z długością
+// o timescale 0 (primaryObject bywa nil albo pustym FFAnchoredClip — wczytuje się później).
+// Przeglądarka FCP ich nie pokazuje (wydarzenie z samymi skorupami: hasFilteredItems 0,
+// hasUnFilteredItems 1 — 2026-09-28). Pusty projekt ma rekord, klip z mediami ma długość
+// z timescale > 0. FFAnchoredSequence sam nie odpowiada na isInTrash.
+BOOL SpliceKit_browserClipIsTrashed(id clip) {
+    if (!clip) return NO;
+    SEL inTrashSel = NSSelectorFromString(@"isInTrash");
+    if ([clip respondsToSelector:inTrashSel] && ((BOOL (*)(id, SEL))objc_msgSend)(clip, inTrashSel)) return YES;
+    SEL recSel = NSSelectorFromString(@"targetSequenceRecord");
+    id rec = [clip respondsToSelector:recSel] ? ((id (*)(id, SEL))objc_msgSend)(clip, recSel) : nil;
+    if (rec) {
+        return [rec respondsToSelector:inTrashSel] && ((BOOL (*)(id, SEL))objc_msgSend)(rec, inTrashSel);
+    }
+    // Skorupa nie odpowiada na duration — długość jak w browser.listClips: duration, clippedRange.
+    SpliceKit_CMTime d = {0, 0, 0, 0};
+    SEL rangeSel = NSSelectorFromString(@"clippedRange");
+    if ([clip respondsToSelector:@selector(duration)]) {
+        d = ((SpliceKit_CMTime (*)(id, SEL))STRET_MSG)(clip, @selector(duration));
+    } else if ([clip respondsToSelector:rangeSel]) {
+        d = ((SpliceKit_CMTimeRange (*)(id, SEL))STRET_MSG)(clip, rangeSel).duration;
+    } else {
+        return NO;
+    }
+    return d.timescale <= 0;
+}
+
+// Klipy wydarzenia tak, jak widać je w przeglądarce: displayOwnedClips (zapas: ownedClips,
+// childItems, items), zbiór → tablica.
+static NSArray *SpliceKit_browserEventClips(id event) {
+    for (NSString *key in @[@"displayOwnedClips", @"ownedClips", @"childItems", @"items"]) {
+        SEL sel = NSSelectorFromString(key);
+        if (![event respondsToSelector:sel]) continue;
+        id clips = ((id (*)(id, SEL))objc_msgSend)(event, sel);
+        if ([clips isKindOfClass:[NSSet class]]) clips = [(NSSet *)clips allObjects];
+        return [clips isKindOfClass:[NSArray class]] ? clips : nil;
+    }
+    return nil;
+}
+
 static NSDictionary *SpliceKit_handleBrowserListClips(NSDictionary *params) {
     NSString *eventFilter = [params[@"event"] isKindOfClass:[NSString class]] ? params[@"event"] : nil;
+    BOOL includeTrashed = [params[@"includeTrashed"] boolValue];
     __block NSDictionary *result = nil;
 
     SpliceKit_executeOnMainThread(^{
         @try {
+            NSInteger skippedTrashed = 0;
             // Get active library -> events -> clips
             id libs = ((id (*)(id, SEL))objc_msgSend)(
                 objc_getClass("FFLibraryDocument"), @selector(copyActiveLibraries));
@@ -13811,29 +13854,7 @@ static NSDictionary *SpliceKit_handleBrowserListClips(NSDictionary *params) {
                     continue;
                 }
 
-                // Events are FFFolder objects. Get their child items which are event clips.
-                // Try multiple approaches: childItems, items, ownedClips, containedItems
-                id clips = nil;
-                SEL childItemsSel = NSSelectorFromString(@"childItems");
-                SEL ownedClipsSel = NSSelectorFromString(@"ownedClips");
-                SEL itemsSel = NSSelectorFromString(@"items");
-
-                // Try displayOwnedClips first (browser-visible clips), then ownedClips
-                SEL displayClipsSel = NSSelectorFromString(@"displayOwnedClips");
-                if ([event respondsToSelector:displayClipsSel]) {
-                    clips = ((id (*)(id, SEL))objc_msgSend)(event, displayClipsSel);
-                } else if ([event respondsToSelector:ownedClipsSel]) {
-                    clips = ((id (*)(id, SEL))objc_msgSend)(event, ownedClipsSel);
-                } else if ([event respondsToSelector:childItemsSel]) {
-                    clips = ((id (*)(id, SEL))objc_msgSend)(event, childItemsSel);
-                } else if ([event respondsToSelector:itemsSel]) {
-                    clips = ((id (*)(id, SEL))objc_msgSend)(event, itemsSel);
-                }
-
-                // Convert NSSet to NSArray if needed
-                if (clips && [clips isKindOfClass:[NSSet class]]) {
-                    clips = [(NSSet *)clips allObjects];
-                }
+                id clips = SpliceKit_browserEventClips(event);
 
                 NSUInteger clipCount = [clips isKindOfClass:[NSArray class]] ? [(NSArray *)clips count] : 0;
                 SpliceKit_log(@"[Browser] Event '%@' class=%@ clips=%@ count=%lu",
@@ -13859,6 +13880,7 @@ static NSDictionary *SpliceKit_handleBrowserListClips(NSDictionary *params) {
                 }
 
                 for (id clip in (NSArray *)clips) {
+                    if (!includeTrashed && SpliceKit_browserClipIsTrashed(clip)) { skippedTrashed++; continue; }
                     NSMutableDictionary *info = [NSMutableDictionary dictionary];
                     info[@"index"] = @(clipIndex++);
                     info[@"event"] = eventName;
@@ -13895,7 +13917,8 @@ static NSDictionary *SpliceKit_handleBrowserListClips(NSDictionary *params) {
                 }
             }
 
-            result = @{@"clips": allClips, @"count": @(allClips.count)};
+            result = @{@"clips": allClips, @"count": @(allClips.count),
+                       @"skippedTrashed": @(skippedTrashed)};
         } @catch (NSException *e) {
             result = @{@"error": [NSString stringWithFormat:@"Exception: %@", e.reason]};
         }
@@ -14393,13 +14416,14 @@ static NSDictionary *SpliceKit_handleBrowserPlaceClip(NSDictionary *params,
                         NSString *lowerName = [name lowercaseString];
                         NSInteger currentIdx = 0;
 
+                        // mikagosz: te same klipy i ta sama numeracja co browser.listClips —
+                        // wcześniej ownedClips bez filtra, więc index z listy wskazywał co innego.
                         for (id event in (NSArray *)events) {
-                            SEL clipsSel = NSSelectorFromString(@"ownedClips");
-                            if (![event respondsToSelector:clipsSel]) continue;
-                            id clips = ((id (*)(id, SEL))objc_msgSend)(event, clipsSel);
-                            if (![clips isKindOfClass:[NSArray class]]) continue;
+                            NSArray *clips = SpliceKit_browserEventClips(event);
+                            if (!clips) continue;
 
-                            for (id c in (NSArray *)clips) {
+                            for (id c in clips) {
+                                if (SpliceKit_browserClipIsTrashed(c)) continue;
                                 if (currentIdx == targetIdx) { clip = c; break; }
                                 if (name && [c respondsToSelector:@selector(displayName)]) {
                                     NSString *dn = ((id (*)(id, SEL))objc_msgSend)(c, @selector(displayName));

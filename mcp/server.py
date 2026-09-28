@@ -6523,18 +6523,23 @@ def direct_timeline_action(action: str = "", selector: str = "",
 
 
 @mcp.tool(annotations=_tool_annotations("browser_list_clips"))
-def browser_list_clips(event: str = "") -> str:
+def browser_list_clips(event: str = "", include_trashed: bool = False) -> str:
     """List clips in the FCP browser (media library).
 
     Returns clips from the active library's events with name, duration,
-    media type, and handle for further operations.
+    media type, and handle for further operations. Projects moved to the
+    library trash (and their empty leftovers) are skipped, like in FCP's own
+    browser; `skippedTrashed` says how many.
 
     Args:
         event: Optional event name to filter by
+        include_trashed: Also list projects that are in the library trash
     """
     params = {}
     if event:
         params["event"] = event
+    if include_trashed:
+        params["includeTrashed"] = True
     r = bridge.call("browser.listClips", **params)
     if _err(r):
         return f"Error: {r.get('error', r)}"
