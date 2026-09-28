@@ -71,6 +71,7 @@ set_transcript_engine
 
 # Napisy
 generate_native_captions
+verify_native_captions
 export_captions_srt
 
 # Eksport

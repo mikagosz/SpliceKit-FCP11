@@ -83,6 +83,7 @@ class AllowlistTests(unittest.TestCase):
             ("browser_select", {"names": ["IMG_1990"]}, "browser.select", {"names": ["IMG_1990"]}),
             ("browser_select", {"names": [], "event": "durok"}, "browser.select", {"names": [], "event": "durok"}),
             ("browser_get_selection", {}, "browser.getSelection", {}),
+            ("verify_native_captions", {}, "nativeCaptions.verify", {}),
         ]
         for tool, args, method, params in cases:
             self.assertIn(tool, names)
@@ -115,6 +116,22 @@ class AllowlistTests(unittest.TestCase):
             {"start": 0.16, "end": 1.6, "text": "Z czego są zrobieni."},
             {"start": 5.76, "end": 12.96, "text": "O'Conner, Parker\ni reszta ekipy."}])
         self.assertTrue(server.generate_native_captions(srt_path="/nie/ma/pliku.srt").startswith("Error"))
+
+    def test_srt_edge_cases(self):
+        import tempfile
+        server = load_server()
+        def parse(text):
+            with tempfile.NamedTemporaryFile("w", suffix=".srt", delete=False, encoding="utf-8") as f:
+                f.write(text)
+            return server._parse_srt(f.name)
+        # kropka zamiast przecinka, krótkie milisekundy (,5 = 500 ms), godziny, blok bez numeru
+        self.assertEqual(parse("00:00:01.5 --> 01:00:02,05\nTekst\n"),
+                         [{"start": 1.5, "end": 3602.05, "text": "Tekst"}])
+        # blok bez tekstu jest pomijany, reszta zostaje
+        self.assertEqual(parse("1\n00:00:01,000 --> 00:00:02,000\n\n2\n00:00:03,000 --> 00:00:04,000\nB\n"),
+                         [{"start": 3.0, "end": 4.0, "text": "B"}])
+        with self.assertRaises(ValueError):
+            parse("to nie jest SRT\n")
 
 
 if __name__ == "__main__":

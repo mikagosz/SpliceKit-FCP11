@@ -7094,9 +7094,10 @@ def generate_native_captions(grouping: str = "word", language: str = "en",
 def verify_native_captions() -> str:
     """Verify native captions on the current timeline.
 
-    Walks the timeline's caption lane and reports all FFAnchoredCaption
-    objects found — their text, display names, and count. Use after
-    generate_native_captions() to confirm captions were placed correctly.
+    Reports every native caption in the project (all caption roles and
+    languages, including disabled ones): text, start and duration in seconds,
+    sorted by time, plus the count. Use after generate_native_captions() to
+    confirm captions were placed correctly.
     """
     r = bridge.call("nativeCaptions.verify")
     if _err(r):

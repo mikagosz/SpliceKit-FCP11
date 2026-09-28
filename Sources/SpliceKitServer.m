@@ -7713,24 +7713,22 @@ static NSDictionary *SpliceKit_handleNativeCaptionsVerify(NSDictionary *params) 
             NSMutableArray *captionInfos = [NSMutableArray array];
             Class captionClass = NSClassFromString(@"FFAnchoredCaption");
 
-            // Try FFAnchoredSequence.allCaptions or captionsWithRoleUID:includingDisabled:
-            SEL allCaptionsSel = NSSelectorFromString(@"allCaptions");
+            // mikagosz: FCP 11.2 nie ma -[FFAnchoredSequence allCaptions], a napisy nie wiszą
+            // na primaryObject, tylko na klipach w środku — stąd zawsze 0. Sekwencja sama zbiera
+            // napisy rekurencyjnie: captionsWithRoleUID:nil includeDisabled:YES = wszystkie role.
             id allCaptions = nil;
-            if ([sequence respondsToSelector:allCaptionsSel]) {
-                allCaptions = ((id (*)(id, SEL))objc_msgSend)(sequence, allCaptionsSel);
+            SEL byRoleSel = NSSelectorFromString(@"captionsWithRoleUID:includeDisabled:");
+            if ([sequence respondsToSelector:byRoleSel]) {
+                allCaptions = ((id (*)(id, SEL, id, BOOL))objc_msgSend)(sequence, byRoleSel, nil, YES);
             }
-
             if (!allCaptions) {
-                // Fallback: check primaryObject's direct anchored items (non-recursive)
-                id primaryObject = ((id (*)(id, SEL))objc_msgSend)(sequence,
-                    NSSelectorFromString(@"primaryObject"));
-                if (primaryObject) {
-                    SEL anchoredSel = NSSelectorFromString(@"anchoredItems");
-                    if ([primaryObject respondsToSelector:anchoredSel]) {
-                        allCaptions = ((id (*)(id, SEL))objc_msgSend)(primaryObject, anchoredSel);
-                    }
+                SEL allCaptionsSel = NSSelectorFromString(@"allCaptions");
+                if ([sequence respondsToSelector:allCaptionsSel]) {
+                    allCaptions = ((id (*)(id, SEL))objc_msgSend)(sequence, allCaptionsSel);
                 }
             }
+            id primaryObject = [sequence respondsToSelector:NSSelectorFromString(@"primaryObject")]
+                ? ((id (*)(id, SEL))objc_msgSend)(sequence, NSSelectorFromString(@"primaryObject")) : nil;
 
             // Process found items
             if (allCaptions) {
@@ -7758,11 +7756,19 @@ static NSDictionary *SpliceKit_handleNativeCaptionsVerify(NSDictionary *params) 
                         if (text) info[@"text"] = text;
                         if (name) info[@"displayName"] = name;
                         info[@"class"] = NSStringFromClass([item class]);
+                        SpliceKit_CMTimeRange range;
+                        if (SpliceKit_tryReadTimelineRange(primaryObject, item, &range)) {
+                            info[@"start"] = @(SpliceKit_secondsFromTime(range.start));
+                            info[@"duration"] = @(SpliceKit_secondsFromTime(range.duration));
+                        }
                         [captionInfos addObject:info];
                     } @catch (NSException *e) {
                         // Skip problematic items
                     }
                 }
+                [captionInfos sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+                    return [(a[@"start"] ?: @0) compare:(b[@"start"] ?: @0)];
+                }];
             }
 
             result = @{
