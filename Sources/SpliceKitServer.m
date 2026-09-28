@@ -3396,6 +3396,27 @@ static NSDictionary *SpliceKit_handleTimelineActionImpl(NSDictionary *params) {
         }
     }
 
+    // mikagosz: w 11.2 nie ma addChannelEQ: (ani pozycji w menu) — Channel EQ to zwykły efekt
+    // audio z biblioteki (AudioUnit „Channel EQ”), dodawany jak apply_effect (2026-09-28).
+    if ([action isEqualToString:@"addChannelEQ"]) {
+        extern NSDictionary *SpliceKit_handleEffectsApply(NSDictionary *params);
+        NSDictionary *r = SpliceKit_handleEffectsApply(@{@"effectID": @"AudioUnit: 0x61756678000000ec454d4147"});
+        if (r[@"error"]) r = SpliceKit_handleEffectsApply(@{@"name": @"Channel EQ"});
+        return r;
+    }
+    // mikagosz: tych funkcji FCP 11.2 nie ma — ani pozycji w menu, ani metod w Flexo (sprawdzone
+    // diag.menuActions, diag.selectorImplementors i zrzutem Flexo 2026-09-28). Jasny błąd zamiast
+    // „No responder handled”.
+    NSDictionary *notIn112 = @{
+        @"enableBeatDetection": @"beat detection",
+        @"beatDetectionGrid": @"the beat detection grid",
+        @"toggleVerifyObjectAlignment": @"object alignment verification",
+    };
+    if (notIn112[action]) {
+        return @{@"error": [NSString stringWithFormat:@"'%@' is not available: Final Cut Pro 11.2 does not have %@ (newer releases only).",
+                            action, notIn112[action]]};
+    }
+
     // addTodoMarker: doesn't exist as an IBAction on FFAnchoredTimelineModule or in the
     // responder chain. Use the direct sequence method that batch markers also uses.
     if ([action isEqualToString:@"addTodoMarker"]) {
@@ -16241,6 +16262,11 @@ static NSDictionary *SpliceKit_handleViewToggle(NSDictionary *params) {
         @"transitionsBrowser": @[@"Window", @"Show in Workspace", @"Transitions"],
     };
     if (menuPanels[panel]) return SpliceKit_handleMenuExecute(@{@"menuPath": menuPanels[panel]});
+    // mikagosz: „Audio Curves” nie ma w 11.2 (toggleAudioCurves: nie istnieje) — krzywe głośności
+    // pokazuje audioAnimation (Clip > Show Audio Animation).
+    if ([panel isEqualToString:@"audioCurves"]) {
+        return @{@"error": @"'audioCurves' is not available in Final Cut Pro 11.2 — use panel 'audioAnimation' (Clip > Show Audio Animation)."};
+    }
     // „Play Full Screen” (fullscreenViewer) nie wyłącza się drugim sendFullScreen:; wyjście to
     // -[PEPlayerContainerModule exitFullScreen:] (sprawdzone 2026-09-28) — bez symulacji Esc.
     if ([panel isEqualToString:@"exitFullscreenViewer"]) {

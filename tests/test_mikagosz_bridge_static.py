@@ -106,6 +106,15 @@ class ViewToggleTests(unittest.TestCase):
         self.assertNotIn("has no menu command in FCP 11.2 — use panel 'videoScopes'", b)
 
 
+class MissingIn112Tests(unittest.TestCase):
+    def test_channel_eq_and_clear_errors(self):
+        b = body(SERVER, "static NSDictionary *SpliceKit_handleTimelineActionImpl(NSDictionary *params) {")
+        self.assertIn("0x61756678000000ec454d4147", b)  # AudioUnit Channel EQ
+        for action in ("enableBeatDetection", "beatDetectionGrid", "toggleVerifyObjectAlignment"):
+            self.assertIn(f'@"{action}": @"', b)
+        self.assertIn("'audioCurves' is not available", body(SERVER, "static NSDictionary *SpliceKit_handleViewToggle("))
+
+
 class ShareTests(unittest.TestCase):
     def test_add_destination_is_refused(self):
         b = body(SERVER, "static NSDictionary *SpliceKit_handleShareExport(")
