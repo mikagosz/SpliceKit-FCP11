@@ -51,6 +51,7 @@ select_tool
 # Efekty, przejścia, tytuły
 list_effects
 apply_effect
+set_effect_enabled
 list_transitions
 apply_transition
 insert_title

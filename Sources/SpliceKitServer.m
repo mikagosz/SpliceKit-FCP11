@@ -28684,6 +28684,9 @@ NSDictionary *SpliceKit_handleRequest(NSDictionary *request) {
     // browser.* namespace
     else if ([method isEqualToString:@"browser.listClips"]) {
         result = SpliceKit_handleBrowserListClips(params);
+    } else if ([method isEqualToString:@"effects.setEnabled"]) {
+        extern NSDictionary *SpliceKit_handleEffectsSetEnabled(NSDictionary *);  // mikagosz
+        result = SpliceKit_handleEffectsSetEnabled(params);
     } else if ([method isEqualToString:@"browser.select"]) {
         extern NSDictionary *SpliceKit_handleBrowserSelect(NSDictionary *);  // mikagosz
         result = SpliceKit_handleBrowserSelect(params);

@@ -361,6 +361,7 @@ DESTRUCTIVE_TOOLS = {
 
 IDEMPOTENT_LOCAL_WRITE_TOOLS = {
     "seek_to_time",
+    "set_effect_enabled",
     "set_timeline_range",
     "set_silence_threshold",
     "set_viewer_zoom",
@@ -8135,6 +8136,22 @@ def mask_attach(effect: str) -> str:
         effect: Effect name on the selected clip, e.g. "Color Adjustments".
     """
     return _fmt(bridge.call("mask.attach", effect=effect))
+
+
+@mcp.tool(annotations=_tool_annotations("set_effect_enabled"))
+def set_effect_enabled(effect: str, enabled: bool = True) -> str:
+    """Turn a video effect on the selected clip on or off, like the checkbox next to the
+    effect in the Video inspector. Settings are kept. One undo step.
+
+    Args:
+        effect: Effect name on the selected clip, e.g. "Magnetic Mask" or
+                "Color Adjustments#2" (the second effect with that name, counting
+                from the top of the inspector).
+        enabled: True = on, False = off.
+
+    Returns the new state and the on/off state of every effect on the clip.
+    """
+    return _fmt(bridge.call("effects.setEnabled", effect=effect, enabled=enabled))
 
 
 @mcp.tool(annotations=_tool_annotations("mask_list_points"))

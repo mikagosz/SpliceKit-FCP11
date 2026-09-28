@@ -565,6 +565,64 @@ NSDictionary *SpliceKit_handleMaskAttach(NSDictionary *params) {
     return result ?: @{@"error": @"mask.attach failed"};
 }
 
+#pragma mark - Efekty: włączanie i wyłączanie
+
+// effects.setEnabled — params: effect (nazwa efektu na zaznaczonym klipie, „Nazwa#2” = drugi
+// o tej nazwie), enabled (domyślnie YES). Jak pole wyboru przy efekcie w inspektorze.
+// Samo -[FFEffect setEnabled:] zmienia flagę w modelu, ale render jej nie widzi (2026-09-28:
+// Magnetic Mask „wyłączona”, obraz dalej wycięty). FCP robi to w -[FFAnchoredTimelineModule
+// toggleAllColorCorrectionOff:]: FFChannelChangeController, willSetChannel:flagsOnly:YES na
+// channelFolder efektu, setEnabled:, didSetChannel:… — jeden krok cofania z nazwą akcji.
+NSDictionary *SpliceKit_handleEffectsSetEnabled(NSDictionary *params) {
+    NSString *name = MKG_effectParam(params);
+    if (!name) return @{@"error": @"effect (name) required, e.g. \"Color Adjustments\" or \"Color Adjustments#2\""};
+    BOOL enabled = params[@"enabled"] ? [params[@"enabled"] boolValue] : YES;
+
+    __block NSDictionary *result = nil;
+    SpliceKit_executeOnMainThread(^{
+        @try {
+            id timeline = SpliceKit_getActiveTimelineModule();
+            id item = timeline ? MKG_selectedTimelineItem(timeline) : nil;
+            if (!item) { result = @{@"error": @"No clip selected"}; return; }
+            id stack = [item respondsToSelector:NSSelectorFromString(@"videoEffects")] ? [item valueForKey:@"videoEffects"] : nil;
+            id effect = stack ? MKG_effectNamed(stack, name) : nil;
+            if (!effect) {
+                result = @{@"error": [NSString stringWithFormat:@"No effect '%@' on the clip. Effects: %@", name,
+                                      [MKG_effectNames(stack) componentsJoinedByString:@", "]]};
+                return;
+            }
+            SEL enabledSel = NSSelectorFromString(@"enabled");
+            BOOL before = ((BOOL (*)(id, SEL))objc_msgSend)(effect, enabledSel);
+            if (before != enabled) {
+                id folder = [effect respondsToSelector:NSSelectorFromString(@"channelFolder")] ? [effect valueForKey:@"channelFolder"] : nil;
+                id anchored = [stack respondsToSelector:NSSelectorFromString(@"anchoredObject")] ? [stack valueForKey:@"anchoredObject"] : item;
+                id ccc = [NSClassFromString(@"FFChannelChangeController") new];
+                if (!folder || !anchored || !ccc) { result = @{@"error": @"Effect channels not reachable"}; return; }
+                NSString *desc = [NSString stringWithFormat:@"%@ %@", enabled ? @"Enable" : @"Disable",
+                                  [effect valueForKey:@"displayName"] ?: name];
+                ((void (*)(id, SEL, id, id))objc_msgSend)(ccc, NSSelectorFromString(@"beginChannelChanges:forObject:"), desc, anchored);
+                ((void (*)(id, SEL, id, BOOL))objc_msgSend)(ccc, NSSelectorFromString(@"willSetChannel:flagsOnly:"), folder, YES);
+                ((void (*)(id, SEL, BOOL))objc_msgSend)(effect, NSSelectorFromString(@"setEnabled:"), enabled);
+                ((void (*)(id, SEL, id, BOOL))objc_msgSend)(ccc, NSSelectorFromString(@"didSetChannel:flagsOnly:"), folder, YES);
+                ((void (*)(id, SEL, id, id))objc_msgSend)(ccc, NSSelectorFromString(@"endChannelChanges:forObject:"), desc, anchored);
+            }
+            BOOL after = ((BOOL (*)(id, SEL))objc_msgSend)(effect, enabledSel);
+            NSMutableArray *states = [NSMutableArray array];
+            for (id e in (NSArray *)[stack valueForKey:@"effects"]) {
+                id dn = [e respondsToSelector:@selector(displayName)] ? [e valueForKey:@"displayName"] : nil;
+                [states addObject:@{@"name": [dn isKindOfClass:[NSString class]] ? dn : NSStringFromClass([e class]),
+                                    @"enabled": @(((BOOL (*)(id, SEL))objc_msgSend)(e, enabledSel))}];
+            }
+            result = after == enabled
+                ? @{@"status": @"ok", @"effect": name, @"enabled": @(after), @"changed": @(before != after), @"effects": states}
+                : @{@"error": [NSString stringWithFormat:@"Effect '%@' is still %@", name, after ? @"enabled" : @"disabled"], @"effects": states};
+        } @catch (NSException *e) {
+            result = @{@"error": [NSString stringWithFormat:@"Exception: %@", e.reason]};
+        }
+    });
+    return result ?: @{@"error": @"effects.setEnabled failed"};
+}
+
 #pragma mark - Przeglądarka: zaznaczanie po nazwie
 
 // Zaznaczenie w przeglądarce to tablica FigTimeRangeAndObject (zakres + obiekt z ownedClips

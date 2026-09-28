@@ -62,5 +62,16 @@ class SeekGuardTests(unittest.TestCase):
         self.assertIn("frameSecs / 2.0", seek)
 
 
+class EffectEnableTests(unittest.TestCase):
+    def test_channel_change_order_like_fcp(self):
+        # Samo setEnabled: zmienia model, ale nie render — kolejność jak w toggleAllColorCorrectionOff:.
+        b = body(DIAG, "NSDictionary *SpliceKit_handleEffectsSetEnabled(")
+        order = ["beginChannelChanges:forObject:", "willSetChannel:flagsOnly:", '"setEnabled:"',
+                 "didSetChannel:flagsOnly:", "endChannelChanges:forObject:"]
+        positions = [b.index(n) for n in order]
+        self.assertEqual(positions, sorted(positions))
+        self.assertIn('@"effects.setEnabled"', SERVER)
+
+
 if __name__ == "__main__":
     unittest.main()
