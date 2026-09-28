@@ -16104,6 +16104,21 @@ static NSDictionary *SpliceKit_handleViewToggle(NSDictionary *params) {
         @"transitionsBrowser": @[@"Window", @"Show in Workspace", @"Transitions"],
     };
     if (menuPanels[panel]) return SpliceKit_handleMenuExecute(@{@"menuPath": menuPanels[panel]});
+    // „Play Full Screen” (fullscreenViewer) nie wyłącza się drugim sendFullScreen:; wyjście to
+    // -[PEPlayerContainerModule exitFullScreen:] (sprawdzone 2026-09-28) — bez symulacji Esc.
+    if ([panel isEqualToString:@"exitFullscreenViewer"]) {
+        __block NSUInteger sent = 0;
+        SpliceKit_executeOnMainThread(^{
+            id deck = [(id)[NSApp delegate] valueForKey:@"upperDeckContainer"];
+            for (id m in (NSArray *)[deck valueForKey:@"submodules"]) {
+                if (![m respondsToSelector:NSSelectorFromString(@"exitFullScreen:")]) continue;
+                ((void (*)(id, SEL, id))objc_msgSend)(m, NSSelectorFromString(@"exitFullScreen:"), nil);
+                sent++;
+            }
+        });
+        return sent ? @{@"status": @"ok", @"panel": panel, @"playerContainers": @(sent)}
+                    : @{@"error": @"No player container to exit full screen"};
+    }
     // 11.2 ma jeden panel zakresów (View > Show in Viewer > Video Scopes); rodzaj zakresu
     // wybiera się w samym panelu — trzy osobne przełączniki robiłyby to samo.
     if ([@[@"histogram", @"vectorscope", @"waveform"] containsObject:panel]) {

@@ -85,7 +85,8 @@ Any command not listed below as fixed should be treated as **unverified on 11.2*
   `beatDetectionGrid`, `toggleVerifyObjectAlignment`, `audioCurves`,
   `showCinematicEditor`. `histogram` / `vectorscope` / `waveform` return an error —
   11.2 has one Video Scopes panel (`videoScopes`), the scope type is picked inside it.
-- `fullscreenViewer` is "Play Full Screen" in 11.2 — it starts playback.
+- `fullscreenViewer` is "Play Full Screen" in 11.2 — it starts playback; leave it with
+  `exitFullscreenViewer` (a second `fullscreenViewer` does not exit).
 - Moving transcript words uses Cut/Paste, so it replaces the clipboard.
 - `browser_list_clips` also lists projects in the library trash.
 
