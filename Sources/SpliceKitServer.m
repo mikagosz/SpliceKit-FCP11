@@ -2901,7 +2901,7 @@ static NSDictionary *SpliceKit_handleTimelineActionImpl(NSDictionary *params) {
         @"findAndReplaceTitle": @"findAndReplace:",
 
         // Project properties
-        @"projectProperties": @"showProjectProperties:",
+        @"projectProperties": @"showProviderSettings:",  // mikagosz: 11.2 Window > Project Properties
 
         // Edit modes - audio/video only
         @"insertEditAudio":  @"insertWithSelectedMediaAudio:",
@@ -3752,8 +3752,6 @@ NSDictionary *SpliceKit_handleDirectTimelineAction(NSDictionary *params) {
                 // This is more precise than the responder-chain blade
                 double time = [params[@"time"] doubleValue];
                 int64_t timeValue = (int64_t)(time * 600);
-                SEL makeSel = NSSelectorFromString(@"CMTimeMake::");
-                id cmtime = nil; // We'll use the Flexo time APIs
                 id selectedItems = getSelectedItems();
                 NSError *error = nil;
                 SEL sel = NSSelectorFromString(@"actionSplitItems:atTime:forContainer:error:");
@@ -7648,9 +7646,14 @@ static NSDictionary *SpliceKit_syncCaptionWordsFromTranscript(void) {
 }
 
 static NSDictionary *SpliceKit_handleNativeCaptionsGenerate(NSDictionary *params) {
+    SpliceKitCaptionPanel *panel = [SpliceKitCaptionPanel sharedPanel];
+    // mikagosz: gotowe napisy (np. tłumaczenie z SRT) — bez transkrypcji i grupowania słów
+    if ([params[@"segments"] isKindOfClass:[NSArray class]]) {
+        return [panel generateNativeCaptions:params[@"language"] ?: @"en" format:params[@"format"] ?: @"ITT"
+                                    segments:params[@"segments"]];
+    }
     NSDictionary *syncError = SpliceKit_syncCaptionWordsFromTranscript();
     if (syncError) return syncError;
-    SpliceKitCaptionPanel *panel = [SpliceKitCaptionPanel sharedPanel];
 
     // Apply grouping mode if specified
     NSString *grouping = params[@"grouping"] ?: @"word";
@@ -12380,10 +12383,22 @@ BOOL SpliceKit_convertFCPXMLToNativeClipboard(void) {
 
         // --- Clean up temp project ---
         @try {
-            SEL delSel = NSSelectorFromString(@"deleteSequence:");
-            id tm = SpliceKit_getActiveTimelineModule();
-            if (tm && [tm respondsToSelector:delSel]) {
-                ((void (*)(id, SEL, id))objc_msgSend)(tm, delSel, tempSeq);
+            // mikagosz: deleteSequence: nie ma w 11.2 nikt — projekt zostawał w bibliotece.
+            // Jak w napisach (SpliceKitCaption_deleteSequence): rekord projektu do kosza biblioteki,
+            // przed właściwym wklejeniem, więc undo wklejenia nie przywraca projektu.
+            SEL recordSel = NSSelectorFromString(@"targetSequenceRecord");
+            SEL trashActionSel = NSSelectorFromString(@"actionMoveLibraryItemToTrash:actionName:error:");
+            id record = [tempSeq respondsToSelector:recordSel]
+                ? ((id (*)(id, SEL))objc_msgSend)(tempSeq, recordSel) : nil;
+            id library = [record respondsToSelector:@selector(library)]
+                ? ((id (*)(id, SEL))objc_msgSend)(record, @selector(library)) : nil;
+            if (record && [library respondsToSelector:trashActionSel]) {
+                NSError *trashError = nil;
+                if (!((BOOL (*)(id, SEL, id, id, NSError **))objc_msgSend)(
+                        library, trashActionSel, record, @"Remove FCPXML Paste Project", &trashError))
+                    SpliceKit_log(@"[FCPXMLPaste] Could not trash temp project: %@", trashError.localizedDescription);
+            } else {
+                SpliceKit_log(@"[FCPXMLPaste] Temp project left in library — no sequence record");
             }
         } @catch (NSException *e) {
             SpliceKit_log(@"[FCPXMLPaste] Cleanup error: %@", e);
@@ -13523,6 +13538,27 @@ NSDictionary *SpliceKit_handleTransitionsApply(NSDictionary *params) {
 
             BOOL inserted = SpliceKit_waitForTransitionInsertion(
                 timelineModule, transitionsBefore, freezeExtend ? 2.0 : 0.5);
+            // mikagosz: po cofnięciu przejścia FCP 11.2 nie widzi krawędzi pod głowicą, dopóki
+            // głowica się nie ruszy (addTransition: nie dochodzi nawet do actionAddTransitions…;
+            // seek na ten sam czas nie pomaga). Klatka wstecz, powrót, druga próba.
+            BOOL retriedAfterNudge = NO;
+            if (!inserted) {
+                double now = SpliceKit_transitionCurrentTimeSeconds(timelineModule);
+                double frame = SpliceKit_transitionFrameDurationSeconds(timelineModule);
+                if (SpliceKit_transitionSeekToSeconds(timelineModule, MAX(now - frame, 0.0))) {
+                    [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
+                    SpliceKit_transitionSeekToSeconds(timelineModule, now);
+                    [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
+                    if ([timelineModule respondsToSelector:addSel]) {
+                        ((void (*)(id, SEL, id))objc_msgSend)(timelineModule, addSel, nil);
+                    } else {
+                        [[NSApplication sharedApplication] sendAction:addSel to:nil from:nil];
+                    }
+                    retriedAfterNudge = YES;
+                    inserted = SpliceKit_waitForTransitionInsertion(
+                        timelineModule, transitionsBefore, freezeExtend ? 2.0 : 0.5);
+                }
+            }
             BOOL freezeExtended = sFreezeExtendDidApply;
             sFreezeExtendDidApply = NO;
             SpliceKit_clearFreezeExtendTransientState();
@@ -13547,6 +13583,7 @@ NSDictionary *SpliceKit_handleTransitionsApply(NSDictionary *params) {
                 @"transition": [appliedName isKindOfClass:[NSString class]] ? appliedName : @"Unknown",
                 @"effectID": resolvedID,
                 @"freezeExtended": @(freezeExtended),
+                @"retriedAfterPlayheadNudge": @(retriedAfterNudge),
             };
         } @catch (NSException *e) {
             sFreezeExtendDidApply = NO;
@@ -16041,14 +16078,9 @@ static NSDictionary *SpliceKit_handleViewToggle(NSDictionary *params) {
     NSDictionary *panelMap = @{
         @"inspector":       @"toggleInspector:",
         @"timeline":        @"toggleTimeline:",
-        @"browser":         @"toggleBrowser:",
+        @"browser":         @"toggleOrganizer:",  // mikagosz: 11.2 Window > Show in Workspace > Browser
         @"eventViewer":     @"toggleEventViewer:",
-        @"effectsBrowser":  @"toggleEffectsBrowser:",
-        @"transitionsBrowser": @"toggleTransitionsBrowser:",
         @"videoScopes":     @"toggleVideoScopes:",
-        @"histogram":       @"toggleHistogram:",
-        @"vectorscope":     @"toggleVectorscope:",
-        @"waveform":        @"toggleWaveformMonitor:",
         @"audioMeter":      @"toggleAudioMeters:",
         @"keywordEditor":   @"toggleKeywordEditor:",
         @"timelineIndex":   @"toggleTimelineIndex:",
@@ -16059,16 +16091,29 @@ static NSDictionary *SpliceKit_handleViewToggle(NSDictionary *params) {
         @"audioAnimation":  @"showTimelineCurveEditor:",
         @"multicamViewer":  @"showMultiangle:",
         @"360viewer":       @"show360:",
-        @"fullscreenViewer": @"toggleFullScreenViewer:",
+        @"fullscreenViewer": @"sendFullScreen:",  // mikagosz: 11.2 View > Playback > Play Full Screen (odtwarza)
         @"backgroundTasks": @"goToBackgroundTaskList:",
         @"voiceover":       @"toggleVoiceoverRecordView:",
         @"comparisonViewer": @"toggleCompareViewer:",
     };
 
+    // mikagosz: w 11.2 przeglądarki efektów/przejść przełącza akcja, która czyta tag pozycji
+    // menu (toggleMedia…BrowserModeFromMenuTag:) — goła akcja nic nie robi, więc przez menu.
+    NSDictionary *menuPanels = @{
+        @"effectsBrowser": @[@"Window", @"Show in Workspace", @"Effects"],
+        @"transitionsBrowser": @[@"Window", @"Show in Workspace", @"Transitions"],
+    };
+    if (menuPanels[panel]) return SpliceKit_handleMenuExecute(@{@"menuPath": menuPanels[panel]});
+    // 11.2 ma jeden panel zakresów (View > Show in Viewer > Video Scopes); rodzaj zakresu
+    // wybiera się w samym panelu — trzy osobne przełączniki robiłyby to samo.
+    if ([@[@"histogram", @"vectorscope", @"waveform"] containsObject:panel]) {
+        return @{@"error": [NSString stringWithFormat:@"'%@' has no menu command in FCP 11.2 — use panel 'videoScopes' and pick the scope type in the scopes panel", panel]};
+    }
+
     NSString *selector = panelMap[panel];
     if (!selector) {
         return @{@"error": [NSString stringWithFormat:@"Unknown panel '%@'. Available: %@",
-                    panel, [[panelMap allKeys] componentsJoinedByString:@", "]]};
+                    panel, [[[panelMap allKeys] arrayByAddingObjectsFromArray:menuPanels.allKeys] componentsJoinedByString:@", "]]};
     }
 
     return SpliceKit_sendAppAction(selector);
@@ -28293,6 +28338,21 @@ NSDictionary *SpliceKit_handleRequest(NSDictionary *request) {
     } else if ([method isEqualToString:@"mask.addControlPoint"]) {
         extern NSDictionary *SpliceKit_handleMaskAddControlPoint(NSDictionary *);  // mikagosz
         result = SpliceKit_handleMaskAddControlPoint(params);
+    } else if ([method isEqualToString:@"mask.listControlPoints"]) {
+        extern NSDictionary *SpliceKit_handleMaskListControlPoints(NSDictionary *);  // mikagosz
+        result = SpliceKit_handleMaskListControlPoints(params);
+    } else if ([method isEqualToString:@"mask.removeControlPoint"]) {
+        extern NSDictionary *SpliceKit_handleMaskRemoveControlPoint(NSDictionary *);  // mikagosz
+        result = SpliceKit_handleMaskRemoveControlPoint(params);
+    } else if ([method isEqualToString:@"mask.analyze"]) {
+        extern NSDictionary *SpliceKit_handleMaskAnalyze(NSDictionary *);  // mikagosz
+        result = SpliceKit_handleMaskAnalyze(params);
+    } else if ([method isEqualToString:@"mask.attach"]) {
+        extern NSDictionary *SpliceKit_handleMaskAttach(NSDictionary *);  // mikagosz
+        result = SpliceKit_handleMaskAttach(params);
+    } else if ([method isEqualToString:@"mask.status"]) {
+        extern NSDictionary *SpliceKit_handleMaskStatus(NSDictionary *);  // mikagosz
+        result = SpliceKit_handleMaskStatus(params);
     } else if ([method isEqualToString:@"system.callMethod"]) {
         result = SpliceKit_handleSystemCallMethod(params);
     } else if ([method isEqualToString:@"system.swizzle"]) {
@@ -28536,6 +28596,12 @@ NSDictionary *SpliceKit_handleRequest(NSDictionary *request) {
     // browser.* namespace
     else if ([method isEqualToString:@"browser.listClips"]) {
         result = SpliceKit_handleBrowserListClips(params);
+    } else if ([method isEqualToString:@"browser.select"]) {
+        extern NSDictionary *SpliceKit_handleBrowserSelect(NSDictionary *);  // mikagosz
+        result = SpliceKit_handleBrowserSelect(params);
+    } else if ([method isEqualToString:@"browser.getSelection"]) {
+        extern NSDictionary *SpliceKit_handleBrowserGetSelection(NSDictionary *);  // mikagosz
+        result = SpliceKit_handleBrowserGetSelection(params);
     } else if ([method isEqualToString:@"browser.appendClip"]) {
         result = SpliceKit_handleBrowserAppendClip(params);
     } else if ([method isEqualToString:@"browser.insertClip"]) {

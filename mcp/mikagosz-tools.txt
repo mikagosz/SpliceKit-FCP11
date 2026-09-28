@@ -16,6 +16,8 @@ create_project
 create_event
 browser_list_clips
 browser_append_clip
+browser_select
+browser_get_selection
 import_media
 
 # Odczyt timeline'u
@@ -83,3 +85,15 @@ fill_dialog_field
 select_dialog_popup
 toggle_dialog_checkbox
 dismiss_dialog
+
+# Diagnostyka FCP 11.2
+diag_menu_actions
+diag_selector_implementors
+
+# Maska magnetyczna
+mask_attach
+mask_list_points
+mask_add_point
+mask_remove_point
+mask_analyze
+mask_status

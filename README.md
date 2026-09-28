@@ -34,29 +34,60 @@ Any command not listed below as fixed should be treated as **unverified on 11.2*
    Final Cut Pro copy, signs it with *your* local code-signing certificate (no silent
    ad-hoc fallback) and verifies the result. It replaces `patcher/patch_fcp.sh`, which
    is out of date upstream, and `make deploy`, which does not inject.
-3. **Smaller MCP surface** — 61 of 221 tools, listed in `mcp/mikagosz-tools.txt`
-   (editing, transcripts, captions, export, dialogs). Tools that can run arbitrary code
-   inside Final Cut Pro (`raw_call`, `call_method*`, `debug_*`, `execute_menu_command`)
-   are left out. Set `SPLICEKIT_ALL_TOOLS=1` to get the full upstream set.
-4. **Fixes for Final Cut Pro 11.2**
-   - `retimeReverse` → FCP 11.2 selector `retimeReverseClip:` (reverse clip works).
-   - Effect parameters: `get_inspector_properties("channels")` now finds effects added
-     from the timeline (they live on the clip's container, `videoEffects`) and walks
-     parameter folders via `children`. `set_inspector_property("handle:…")` now opens
-     the edit action on the stack that owns the parameter, so Final Cut Pro redraws,
-     saves and can undo the change. Result: Color Adjustments and similar effects can
-     be read and set over MCP.
-5. **Build fixes** — paths with spaces (`Makefile`), missing BRAW stubs when the
+3. **Smaller MCP surface** — 71 of 241 tools, listed in `mcp/mikagosz-tools.txt`
+   (editing, transcripts, captions, export, dialogs, Magnetic Mask, browser selection,
+   11.2 diagnostics). Tools that can run arbitrary code inside Final Cut Pro
+   (`raw_call`, `call_method*`, `debug_*`, `execute_menu_command`) are left out.
+   Set `SPLICEKIT_ALL_TOOLS=1` to get the full upstream set. Tool failures come back
+   as MCP errors (`isError`), not as plain text.
+4. **Fixes for Final Cut Pro 11.2** — each one checked live on 11.2 after a rebuild.
+   - **40 menu actions renamed in 11.2** are wired to the real selectors read from the
+     running app's menu (`setRangeStart:` → `setSelectionStart:`, `duplicate:` →
+     `duplicateProjectAs:`, `showMagneticMaskEditor` → `toggleSegmentationMaskEditor:`,
+     `retimeSlow10` → `retimeSlowTenPercent:`, `projectProperties` →
+     `showProviderSettings:` …). Effects and Transitions browsers open through their
+     menu items (the action reads the item's tag).
+   - **Crash guard**: an action Final Cut Pro greys out in its menu for the current
+     state is not sent (`collapseToConnectedStoryline` on a primary clip used to crash it).
+   - **Background operation**: navigation, seek, range and tool selection go straight to
+     the timeline instead of the responder chain, which silently did nothing while FCP
+     was not the frontmost app.
+   - **Editing**: one undo step per batch (blade at times, transcript edits), marker
+     names kept, frame times without rounding drift; a transition can be added again
+     where one was just undone (FCP needs the playhead to move first).
+   - **Transcripts**: silence removal no longer cuts into speech; a transcript that no
+     longer matches the timeline is refused instead of cutting in the wrong places.
+   - **Native captions** start at the project start (not at the playhead), keep the
+     original letter case, and the temporary import project goes to the library trash.
+   - **Dialogs**: popup and checkbox handling no longer crash FCP; `detect_dialog`
+     reports popups and checkboxes; `share_project` accepts 11.2 destination names and
+     reports a modal share window instead of a false error.
+   - **Inspector**: effect parameters live on the clip's container (`videoEffects`);
+     reads and writes go there, scale in percent, non-numeric values refused.
+   - `retimeReverse` → `retimeReverseClip:`; volume ±1 dB → `volumeUp:`/`volumeDown:`.
+5. **New commands**
+   - `diag.menuActions`, `diag.selectorImplementors` (MCP `diag_menu_actions`,
+     `diag_selector_implementors`) — the menu with its selectors, and which classes
+     implement a selector. Use them before trusting an upstream command on 11.2.
+   - Magnetic Mask: `mask_add_point` (point as a fraction of the frame from the top-left
+     corner), `mask_list_points`, `mask_remove_point`, `mask_analyze`, `mask_status`;
+     `mask_attach` puts a Magnetic Mask on an effect (e.g. a colour correction limited to
+     the subject) and the other mask tools take `effect=` to work on it.
+   - `browser_select` / `browser_get_selection` — select clips or projects in the browser
+     by name, for menu commands that act on the browser selection.
+6. **Build fixes** — paths with spaces (`Makefile`), missing BRAW stubs when the
    Blackmagic RAW SDK is not installed, `parakeet-transcriber` pinned to FluidAudio
    0.13.6 (0.13.7 changed the `transcribe` API).
 
 ### Known on 11.2, not fixed yet
 
-- `showMagneticMaskEditor` — "No responder handled"; FCP 11.2 has
-  `toggleSegmentationMaskEditor:`. Adding a Magnetic Mask over MCP works, but it does
-  not enter subject-selection mode.
-- `retimeSlow10` (`retimeSlowTenth:`) — untested.
-- `browser_append_clip` resolves clips only by `handle`, not by name or index.
+- No menu command in 11.2 for: `addChannelEQ`, `addTodoMarker`, `enableBeatDetection`,
+  `beatDetectionGrid`, `toggleVerifyObjectAlignment`, `audioCurves`,
+  `showCinematicEditor`. `histogram` / `vectorscope` / `waveform` return an error —
+  11.2 has one Video Scopes panel (`videoScopes`), the scope type is picked inside it.
+- `fullscreenViewer` is "Play Full Screen" in 11.2 — it starts playback.
+- Moving transcript words uses Cut/Paste, so it replaces the clipboard.
+- `browser_list_clips` also lists projects in the library trash.
 
 ### Left in the tree, unused
 

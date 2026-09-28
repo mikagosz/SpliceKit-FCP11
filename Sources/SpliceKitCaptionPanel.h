@@ -149,6 +149,7 @@ extern NSNotificationName const SpliceKitCaptionDidGenerateNotification;
 // Generation & Export
 - (NSDictionary *)generateCaptions;
 - (NSDictionary *)generateNativeCaptions:(NSString *)language format:(NSString *)format;
+- (NSDictionary *)generateNativeCaptions:(NSString *)language format:(NSString *)format segments:(NSArray *)segments;
 - (NSDictionary *)exportSRT:(NSString *)outputPath;
 - (NSDictionary *)exportTXT:(NSString *)outputPath;
 

@@ -202,6 +202,12 @@ DESTRUCTIVE_LOCAL_WRITE = {
 
 READ_ONLY_TOOLS = {
     "bridge_status",
+    # mikagosz
+    "diag_menu_actions",
+    "diag_selector_implementors",
+    "mask_list_points",
+    "mask_status",
+    "browser_get_selection",
     "background_render_status",
     "dual_timeline_status",
     "get_timeline_clips",
@@ -6999,10 +7005,36 @@ def set_caption_words(words: str) -> str:
     return _fmt(r)
 
 
+def _parse_srt(path: str) -> list[dict]:
+    """mikagosz: SRT → [{start, end, text}] w sekundach (wiele linii tekstu zostaje z \\n)."""
+    import re
+    from pathlib import Path
+
+    text = Path(path).expanduser().read_text(encoding="utf-8-sig").replace("\r\n", "\n")
+    stamp = re.compile(r"(\d+):(\d{2}):(\d{2})[,.](\d{1,3})\s*-->\s*(\d+):(\d{2}):(\d{2})[,.](\d{1,3})")
+    segments = []
+    for block in re.split(r"\n\s*\n", text.strip()):
+        lines = block.strip().split("\n")
+        for i, line in enumerate(lines):
+            m = stamp.search(line)
+            if not m:
+                continue
+            g = [int(x) for x in m.groups()]
+            start = g[0] * 3600 + g[1] * 60 + g[2] + int(m.group(4).ljust(3, "0")) / 1000
+            end = g[4] * 3600 + g[5] * 60 + g[6] + int(m.group(8).ljust(3, "0")) / 1000
+            caption = "\n".join(l.strip() for l in lines[i + 1:] if l.strip())
+            if caption:
+                segments.append({"start": start, "end": end, "text": caption})
+            break
+    if not segments:
+        raise ValueError(f"No captions found in {path}")
+    return segments
+
+
 @mcp.tool(annotations=_tool_annotations("generate_native_captions"))
 def generate_native_captions(grouping: str = "word", language: str = "en",
                               max_words: int = 1, max_seconds: float = 3.0,
-                              format: str = "ITT") -> str:
+                              format: str = "ITT", srt_path: str = "") -> str:
     """Generate native FCP captions (FFAnchoredCaption) with word-level timing.
 
     Unlike generate_captions() which creates styled Motion title clips for
@@ -7030,9 +7062,21 @@ def generate_native_captions(grouping: str = "word", language: str = "en",
         max_words: Override max words per caption (when grouping="word" or "group:N")
         max_seconds: Override max duration per caption (when grouping="time:S")
         format: Caption format - "ITT" (default), "SRT", or "CEA608"
+        srt_path: Captions from this SRT file instead of the transcript (e.g. a translation);
+                  times are from the project start, grouping/max_* are ignored. Set language
+                  to the file's language (e.g. "pl").
 
     Returns the number of native captions created and their placement status.
     """
+    if srt_path:
+        try:
+            segments = _parse_srt(srt_path)
+        except (OSError, ValueError) as e:
+            return f"Error: {e}"
+        r = bridge.call("nativeCaptions.generate", language=language, format=format, segments=segments)
+        if _err(r):
+            return f"Error: {r.get('error', r)}"
+        return _fmt(r)
     params = {
         "grouping": grouping,
         "language": language,
@@ -8025,6 +8069,166 @@ def visionpro_set_max_clients(max: int) -> str:
     """Set the maximum number of Vision Pro clients that can connect simultaneously."""
     r = _call("visionpro.setMaxClients", max=max)
     return _fmt(r)
+
+
+# ============================================================
+# mikagosz: diagnostyka FCP 11.2 i maska magnetyczna
+# ============================================================
+
+@mcp.tool(annotations=_tool_annotations("diag_menu_actions"))
+def diag_menu_actions(filter: str = "") -> str:
+    """List FCP's main menu items with the action (selector) each one sends.
+
+    The source of truth for action names in the running FCP version — upstream names
+    written for FCP 12 often differ in 11.2 (setRangeStart: → setSelectionStart: …).
+
+    Args:
+        filter: Optional case-insensitive text matched against the menu path and action.
+    """
+    r = bridge.call("diag.menuActions")
+    if _err(r):
+        return f"Error: {r.get('error', r)}"
+    items = r.get("items", [])
+    if filter:
+        f = filter.lower()
+        items = [i for i in items if f in i.get("path", "").lower() or f in i.get("action", "").lower()]
+    lines = [f"{len(items)} of {r.get('count', len(items))} menu items"]
+    for i in items:
+        extra = "".join(f"  [{k}: {i[k]}]" for k in ("key", "target") if i.get(k))
+        lines.append(f"{i.get('path')} → {i.get('action')}{extra}")
+    return "\n".join(lines)
+
+
+@mcp.tool(annotations=_tool_annotations("diag_selector_implementors"))
+def diag_selector_implementors(selectors: list[str], limit: int = 12) -> str:
+    """Find which ObjC classes implement the given selectors in the running FCP.
+
+    Use to check a bridge command before relying on it: a selector nobody implements
+    is a dead command in this FCP version.
+
+    Args:
+        selectors: Selector names, e.g. ["addTransition:", "setSelectionStart:"].
+        limit: Max classes listed per selector.
+    """
+    r = bridge.call("diag.selectorImplementors", selectors=selectors, limit=limit)
+    return _fmt(r)
+
+
+def _mask_effect(effect: str) -> dict:
+    return {"effect": effect} if effect else {}
+
+
+@mcp.tool(annotations=_tool_annotations("mask_attach"))
+def mask_attach(effect: str) -> str:
+    """Attach a Magnetic Mask to an effect on the selected clip (like the mask button in the
+    effect's inspector header), so the effect — e.g. a colour correction — applies only to
+    the subject. The new mask is empty: add points with mask_add_point(effect=…), then
+    mask_analyze(effect=…). One undo step.
+
+    Args:
+        effect: Effect name on the selected clip, e.g. "Color Adjustments".
+    """
+    return _fmt(bridge.call("mask.attach", effect=effect))
+
+
+@mcp.tool(annotations=_tool_annotations("mask_list_points"))
+def mask_list_points(effect: str = "") -> str:
+    """List the Magnetic Mask control points on the selected clip.
+
+    Each point has x, y as fractions of the frame from the top-left corner (as on a
+    screenshot), the raw mask pixels (from the frame centre, y up) and include (+/-).
+    offset = seconds from the clip start of the frame the points belong to.
+
+    effect: empty = the standalone Magnetic Mask effect; an effect name (e.g.
+            "Color Adjustments") = the mask attached to that effect (see mask_attach).
+    """
+    return _fmt(bridge.call("mask.listControlPoints", **_mask_effect(effect)))
+
+
+@mcp.tool(annotations=_tool_annotations("mask_add_point"))
+def mask_add_point(x: float, y: float, offset: float = 0.0, include: bool = True,
+                   analyze: bool = False, effect: str = "") -> str:
+    """Add a Magnetic Mask control point on the selected clip (clip must have Magnetic Mask).
+
+    Args:
+        x, y: Point as fractions of the frame, 0–1 from the top-left corner.
+        offset: Seconds from the clip start (the frame the point belongs to).
+        include: True = part of the subject, False = exclude.
+        analyze: Start analysis in both directions afterwards (needs the mask controls
+                 visible in the viewer — see mask_analyze).
+
+    effect: empty = the standalone Magnetic Mask effect; an effect name (e.g.
+            "Color Adjustments") = the mask attached to that effect (see mask_attach).
+    """
+    return _fmt(bridge.call("mask.addControlPoint", x=x, y=y, offset=offset,
+                            include=include, analyze=analyze, **_mask_effect(effect)))
+
+
+@mcp.tool(annotations=_tool_annotations("mask_remove_point"))
+def mask_remove_point(index: int, offset: float = 0.0, effect: str = "") -> str:
+    """Remove one Magnetic Mask control point from the selected clip (one undo step).
+
+    Args:
+        index: Point index as listed by mask_list_points for that offset.
+        offset: The record's offset from mask_list_points.
+    The existing analysis still reflects the old points — run mask_analyze afterwards.
+
+    effect: empty = the standalone Magnetic Mask effect; an effect name (e.g.
+            "Color Adjustments") = the mask attached to that effect (see mask_attach).
+    """
+    return _fmt(bridge.call("mask.removeControlPoint", index=index, offset=offset,
+                            **_mask_effect(effect)))
+
+
+@mcp.tool(annotations=_tool_annotations("mask_analyze"))
+def mask_analyze(direction: str = "both", effect: str = "") -> str:
+    """Analyze the Magnetic Mask like the Analyze button in the viewer.
+
+    Needs the clip selected. Puts the mask controls into the viewer if FCP has not,
+    shows FCP's analysis progress window and returns when the analysis is done
+    (newRecords > 0 = analysis added). One undo step ("Magnetic Mask Analysis").
+
+    Args:
+        direction: "both", "forward", "backward", "stepForward" or "stepBackward".
+
+    effect: empty = the standalone Magnetic Mask effect; an effect name (e.g.
+            "Color Adjustments") = the mask attached to that effect (see mask_attach).
+    """
+    return _fmt(bridge.call("mask.analyze", direction=direction, **_mask_effect(effect)))
+
+
+@mcp.tool(annotations=_tool_annotations("mask_status"))
+def mask_status(effect: str = "") -> str:
+    """Magnetic Mask state on the selected clip: analysis running, analyzed ranges.
+
+    effect: empty = the standalone Magnetic Mask effect; an effect name (e.g.
+            "Color Adjustments") = the mask attached to that effect (see mask_attach).
+    """
+    return _fmt(bridge.call("mask.status", **_mask_effect(effect)))
+
+
+
+@mcp.tool(annotations=_tool_annotations("browser_select"))
+def browser_select(names: list[str], event: str = "") -> str:
+    """Select clips or projects in the browser by name (needed by menu commands that act on
+    the browser selection: move to trash, merge events, transcode, ratings, keywords…).
+
+    Args:
+        names: Exact clip/project names to select; [] clears the selection.
+        event: Event to show in the sidebar first; empty = the event already shown.
+    Items in the library trash are ignored. Nothing is selected if a name is missing
+    or ambiguous — the error lists them.
+    """
+    params = {"names": names}
+    if event:
+        params["event"] = event
+    return _fmt(bridge.call("browser.select", **params))
+
+
+@mcp.tool(annotations=_tool_annotations("browser_get_selection"))
+def browser_get_selection() -> str:
+    """What is selected in the browser and which events the sidebar shows."""
+    return _fmt(bridge.call("browser.getSelection"))
 
 
 def _apply_allowlist(server) -> None:

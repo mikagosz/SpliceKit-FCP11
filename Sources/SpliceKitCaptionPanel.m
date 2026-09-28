@@ -5347,17 +5347,37 @@ static BOOL SpliceKitCaption_pollMainThread(BOOL (^condition)(void), double time
 // This matches the path FCP uses for File > Import > Captions (SRT/ITT).
 
 - (NSDictionary *)generateNativeCaptions:(NSString *)language format:(NSString *)format {
-    SpliceKit_log(@"[NativeCaptions] generateNativeCaptions called. Words: %lu, Segments: %lu, lang=%@, fmt=%@",
+    return [self generateNativeCaptions:language format:format segments:nil];
+}
+
+// mikagosz: segments = gotowe napisy [{start, end, text}] w sekundach od początku projektu
+// (np. tłumaczenie z pliku SRT) zamiast słów transkrypcji.
+- (NSDictionary *)generateNativeCaptions:(NSString *)language format:(NSString *)format segments:(NSArray *)customSegments {
+    SpliceKit_log(@"[NativeCaptions] generateNativeCaptions called. Words: %lu, Segments: %lu, custom: %lu, lang=%@, fmt=%@",
                   (unsigned long)self.mutableWords.count, (unsigned long)self.mutableSegments.count,
-                  language, format);
+                  (unsigned long)customSegments.count, language, format);
 
-    if (self.mutableWords.count == 0) {
-        return @{@"error": @"No words — transcribe the timeline first"};
-    }
-
-    [self regroupSegments];
-    if (self.mutableSegments.count == 0) {
-        return @{@"error": @"No segments after grouping — check word timings"};
+    NSMutableArray<NSDictionary *> *items = [NSMutableArray array];
+    if (customSegments) {
+        for (id s in customSegments) {
+            if (![s isKindOfClass:[NSDictionary class]]) continue;
+            double start = [s[@"start"] doubleValue], end = [s[@"end"] doubleValue];
+            NSString *text = [s[@"text"] isKindOfClass:[NSString class]] ? s[@"text"] : @"";
+            if (end <= start || text.length == 0)
+                return @{@"error": [NSString stringWithFormat:@"Bad segment %lu: needs start < end and text", (unsigned long)items.count + 1]};
+            [items addObject:@{@"start": @(start), @"duration": @(end - start), @"text": text}];
+        }
+        if (items.count == 0) return @{@"error": @"segments is empty"};
+    } else {
+        if (self.mutableWords.count == 0) {
+            return @{@"error": @"No words — transcribe the timeline first"};
+        }
+        [self regroupSegments];
+        if (self.mutableSegments.count == 0) {
+            return @{@"error": @"No segments after grouping — check word timings"};
+        }
+        for (SpliceKitCaptionSegment *seg in self.mutableSegments)
+            [items addObject:@{@"start": @(seg.startTime), @"duration": @(seg.duration), @"text": seg.text ?: @""}];
     }
     [self detectTimelineProperties];
 
@@ -5371,8 +5391,9 @@ static BOOL SpliceKitCaption_pollMainThread(BOOL (^condition)(void), double time
     // We import via FFXMLTranslationTask (same as the existing title caption path).
 
     double totalDuration = 0;
-    for (SpliceKitCaptionSegment *seg in self.mutableSegments) {
-        if (seg.endTime > totalDuration) totalDuration = seg.endTime;
+    for (NSDictionary *seg in items) {
+        double end = [seg[@"start"] doubleValue] + [seg[@"duration"] doubleValue];
+        if (end > totalDuration) totalDuration = end;
     }
     totalDuration += 1.0;
 
@@ -5403,14 +5424,19 @@ static BOOL SpliceKitCaption_pollMainThread(BOOL (^condition)(void), double time
         totalDurStr];
 
     NSUInteger captionCount = 0;
-    for (SpliceKitCaptionSegment *seg in self.mutableSegments) {
+    for (NSDictionary *seg in items) {
         // mikagosz: natywne napisy to tekst, nie grafika — bez ALL CAPS ze stylu tytułów
         // (domyślny „Bold Pop” zamieniał całe napisy na wielkie litery)
-        NSString *text = seg.text;
+        NSString *text = seg[@"text"];
         if (text.length == 0) continue;
 
-        NSString *offsetStr = SpliceKitCaption_durRational(seg.startTime, fdN, fdD);
-        NSString *durStr = SpliceKitCaption_durRational(MAX(seg.duration, 0.04), fdN, fdD);
+        // mikagosz: początek i KONIEC do klatki osobno — zaokrąglana długość wydłużała napis o klatkę
+        // na następny, a FCP spychał go wtedy na drugi pas (czerwony) — 5 z 48 w Furious 6.
+        double frame = fdD > 0 ? (double)fdN / fdD : 1.0 / 30.0;
+        double startF = round([seg[@"start"] doubleValue] / frame);
+        double endF = round(([seg[@"start"] doubleValue] + [seg[@"duration"] doubleValue]) / frame);
+        NSString *offsetStr = SpliceKitCaption_durRational(startF * frame, fdN, fdD);
+        NSString *durStr = SpliceKitCaption_durRational(MAX(endF - startF, 1) * frame, fdN, fdD);
 
         // <caption> uses offset (position in parent), duration, and lane.
         // The role uses "ITT.lang" format. No start= needed (defaults to 0s).
@@ -5590,7 +5616,7 @@ static BOOL SpliceKitCaption_pollMainThread(BOOL (^condition)(void), double time
     return @{
         @"status": @"ok",
         @"captionCount": @(captionCount),
-        @"segmentCount": @(self.mutableSegments.count),
+        @"segmentCount": @(items.count),
         @"wordCount": @(self.mutableWords.count),
         @"language": lang,
         @"format": fmt,
