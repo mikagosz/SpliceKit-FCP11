@@ -16256,10 +16256,52 @@ static NSDictionary *SpliceKit_handleViewToggle(NSDictionary *params) {
         return sent ? @{@"status": @"ok", @"panel": panel, @"playerContainers": @(sent)}
                     : @{@"error": @"No player container to exit full screen"};
     }
-    // 11.2 ma jeden panel zakresów (View > Show in Viewer > Video Scopes); rodzaj zakresu
-    // wybiera się w samym panelu — trzy osobne przełączniki robiłyby to samo.
-    if ([@[@"histogram", @"vectorscope", @"waveform"] containsObject:panel]) {
-        return @{@"error": [NSString stringWithFormat:@"'%@' has no menu command in FCP 11.2 — use panel 'videoScopes' and pick the scope type in the scopes panel", panel]};
+    // 11.2 ma jeden panel zakresów (View > Show in Viewer > Video Scopes); rodzaj wybiera
+    // -[PEScopesContainerModule setSelectedScope:atIndex:] nazwą „Histogram” / „Vectorscope” /
+    // „Waveform” (inna nazwa = wyjątek w _assignMediaToPlayers — 2026-09-28). Panel zamknięty →
+    // najpierw toggleVideoScopes:. Ustawia pierwszy widok zakresu (indeks 0).
+    NSDictionary *scopeNames = @{@"histogram": @"Histogram", @"vectorscope": @"Vectorscope", @"waveform": @"Waveform"};
+    if (scopeNames[panel]) {
+        NSString *scope = scopeNames[panel];
+        __block id container = nil;
+        id (^findContainer)(void) = ^id{
+            id deck = [(id)[NSApp delegate] valueForKey:@"upperDeckContainer"];
+            for (id m in (NSArray *)[deck valueForKey:@"submodules"])
+                for (id sub in ([m respondsToSelector:NSSelectorFromString(@"submodules")] ? [m valueForKey:@"submodules"] : @[]))
+                    if ([sub isKindOfClass:NSClassFromString(@"PEScopesContainerModule")]) return sub;
+            return nil;
+        };
+        __block BOOL opened = NO;
+        SpliceKit_executeOnMainThread(^{ container = findContainer(); });
+        if (!container) {
+            SpliceKit_sendAppAction(@"toggleVideoScopes:");
+            opened = YES;
+            for (int i = 0; i < 10 && !container; i++) {
+                [NSThread sleepForTimeInterval:0.1];
+                SpliceKit_executeOnMainThread(^{ container = findContainer(); });
+            }
+        }
+        if (!container) return @{@"error": @"Video Scopes panel did not open"};
+        __block NSString *now = nil;
+        SpliceKit_executeOnMainThread(^{
+            ((void (*)(id, SEL, id, NSUInteger))objc_msgSend)(container, NSSelectorFromString(@"setSelectedScope:atIndex:"), scope, 0);
+            now = ((id (*)(id, SEL, NSUInteger))objc_msgSend)(container, NSSelectorFromString(@"selectedScopeAtIndex:"), 0);
+        });
+        return [now isEqualToString:scope]
+            ? @{@"status": @"ok", @"panel": panel, @"scope": scope, @"openedScopesPanel": @(opened)}
+            : @{@"error": [NSString stringWithFormat:@"Scope is '%@', expected '%@'", now ?: @"?", scope]};
+    }
+    // mikagosz: „Play Full Screen” nie wyłącza się drugim sendFullScreen: — gdy podgląd już jest
+    // na pełnym ekranie (isInFullScreenMode), fullscreenViewer wychodzi, jak przełącznik.
+    if ([panel isEqualToString:@"fullscreenViewer"]) {
+        __block BOOL inFull = NO;
+        SpliceKit_executeOnMainThread(^{
+            id deck = [(id)[NSApp delegate] valueForKey:@"upperDeckContainer"];
+            for (id m in (NSArray *)[deck valueForKey:@"submodules"])
+                if ([m respondsToSelector:NSSelectorFromString(@"isInFullScreenMode")] &&
+                    ((BOOL (*)(id, SEL))objc_msgSend)(m, NSSelectorFromString(@"isInFullScreenMode"))) inFull = YES;
+        });
+        if (inFull) return SpliceKit_handleViewToggle(@{@"panel": @"exitFullscreenViewer"});
     }
 
     NSString *selector = panelMap[panel];

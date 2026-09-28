@@ -97,6 +97,15 @@ class ClipboardTests(unittest.TestCase):
         self.assertLess(b.index('@"paste:"'), b.index("SpliceKitTranscript_restorePasteboard("))
 
 
+class ViewToggleTests(unittest.TestCase):
+    def test_scopes_and_fullscreen(self):
+        b = body(SERVER, "static NSDictionary *SpliceKit_handleViewToggle(")
+        for name in ('@"Histogram"', '@"Vectorscope"', '@"Waveform"', "setSelectedScope:atIndex:",
+                     "isInFullScreenMode"):
+            self.assertIn(name, b)
+        self.assertNotIn("has no menu command in FCP 11.2 — use panel 'videoScopes'", b)
+
+
 class ShareTests(unittest.TestCase):
     def test_add_destination_is_refused(self):
         b = body(SERVER, "static NSDictionary *SpliceKit_handleShareExport(")
